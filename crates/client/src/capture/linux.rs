@@ -148,6 +148,7 @@ impl CaptureImpl for LinuxCapture {
                 y: reply.root_y as u32,
             });
         }
+        #[allow(unreachable_code)]
         None
     }
 
@@ -198,7 +199,7 @@ fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
     let shm = shm_guard.as_ref().unwrap();
 
     let t0 = std::time::Instant::now();
-    conn.shm_get_image(root, 0, 0, geo.width, geo.height, u32::MAX, ImageFormat::Z_PIXMAP, shm.seg, 0)?.reply()?;
+    conn.shm_get_image(root, 0, 0, geo.width, geo.height, u32::MAX, ImageFormat::Z_PIXMAP.into(), shm.seg, 0)?.reply()?;
     let raw = unsafe { std::slice::from_raw_parts(shm.ptr, size) };
     let elapsed = t0.elapsed();
     let pixel_count = (w as usize) * (h as usize);
@@ -220,6 +221,7 @@ fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
 /// Create a shared memory segment and attach to X server.
 #[cfg(feature = "x11-capture")]
 fn create_shm(conn: &RustConnection, size: usize) -> Result<ShmState> {
+    use x11rb::connection::Connection;
     use x11rb::protocol::shm::ConnectionExt as _;
 
     let id = unsafe { libc::shmget(libc::IPC_PRIVATE, size, libc::IPC_CREAT | 0o600) };
