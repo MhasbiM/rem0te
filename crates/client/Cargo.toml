@@ -45,13 +45,12 @@ clap = { version = "4", features = ["derive", "env"] }
 # System info
 hostname = "0.4"
 
-# Image processing
-image = "0.25"
+# Utilities
 bytes = "1"
 
 # AV1 video encoding (pure Rust, no system deps)
-# Already used internally by webrtc, but we need it as direct dep for encoding
-rav1e = "0.8"
+# disable "asm" → no NASM required; keep "threading" for multi-core performance
+rav1e = { version = "0.8", default-features = false, features = ["threading"] }
 v_frame = "0.3"
 
 # ---------------------------------------------------------------------------
