@@ -6,18 +6,26 @@
 //! 3. **Fallback**: blank frames (allows client to run, just no video)
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 
 use super::{CapturedFrame, CaptureImpl, CursorPosition};
 
+#[cfg(feature = "x11-capture")]
+use x11rb::rust_connection::RustConnection;
+
 pub struct LinuxCapture {
     display_width: u32,
     display_height: u32,
-    /// Whether X11 capture was successfully initialized.
+    /// Whether X11 capture is available.
     x11_available: AtomicBool,
-    /// Cached X11 display name for reconnection each frame.
-    x11_display: Option<String>,
+    /// Cached X11 connection (opened once, reused across frames).
+    #[cfg(feature = "x11-capture")]
+    x11_conn: Option<Arc<Mutex<RustConnection>>>,
+    /// Screen number for the cached connection.
+    #[cfg(feature = "x11-capture")]
+    x11_screen_num: usize,
 }
 
 impl LinuxCapture {
@@ -29,37 +37,53 @@ impl LinuxCapture {
         let (w, h) = detect_display_dimensions();
 
         if is_wayland {
-            tracing::info!("Wayland detected — screen capture not yet implemented. Enable `linux-media` feature for PipeWire support.");
+            tracing::info!("Wayland detected — screen capture not yet implemented.");
             return Ok(Self {
                 display_width: w,
                 display_height: h,
                 x11_available: AtomicBool::new(false),
-                x11_display: None,
+                #[cfg(feature = "x11-capture")]
+                x11_conn: None,
+                #[cfg(feature = "x11-capture")]
+                x11_screen_num: 0,
             });
         }
 
-        // Try to find a working X11 display
-        let display = find_x11_display();
-        let x11_ok = display.is_some() && cfg!(feature = "x11-capture");
-        if let Some(ref dpy) = display {
-            tracing::info!(
-                "X11 display '{}' found — capture {} (feature x11-capture: {})",
-                dpy,
-                if x11_ok { "ENABLED" } else { "DISABLED (feature off)" },
-                cfg!(feature = "x11-capture")
-            );
-        } else {
-            tracing::warn!(
-                "No X11 display found ($DISPLAY={:?}, tried :0, :1). Video will be black.",
-                std::env::var("DISPLAY").ok()
-            );
-        }
+        // Try to connect to X11 once and cache the connection
+        #[cfg(feature = "x11-capture")]
+        let (conn, screen_num, ok) = {
+            let display = find_x11_display();
+            match display {
+                Some(dpy) => {
+                    match RustConnection::connect(Some(&dpy)) {
+                        Ok((conn, sn)) => {
+                            tracing::info!("X11 display '{}' connected — capture ENABLED", dpy);
+                            (Some(Arc::new(Mutex::new(conn))), sn, true)
+                        }
+                        Err(e) => {
+                            tracing::warn!("X11 display '{}' found but connection failed: {e}", dpy);
+                            (None, 0, false)
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!("No X11 display found ($DISPLAY={:?}).", std::env::var("DISPLAY").ok());
+                    (None, 0, false)
+                }
+            }
+        };
+
+        #[cfg(not(feature = "x11-capture"))]
+        let ok = false;
 
         Ok(Self {
             display_width: w,
             display_height: h,
-            x11_available: AtomicBool::new(display.is_some() && cfg!(feature = "x11-capture")),
-            x11_display: display,
+            x11_available: AtomicBool::new(ok),
+            #[cfg(feature = "x11-capture")]
+            x11_conn: conn,
+            #[cfg(feature = "x11-capture")]
+            x11_screen_num: screen_num,
         })
     }
 }
@@ -76,7 +100,7 @@ impl CaptureImpl for LinuxCapture {
 
     fn capture_frame(&self) -> Result<CapturedFrame> {
         if self.x11_available.load(Ordering::Relaxed) {
-            match capture_x11(self.x11_display.as_deref()) {
+            match capture_x11_cached(self) {
                 Ok(frame) => return Ok(frame),
                 Err(e) => {
                     tracing::warn!("X11 capture failed, falling back to blank: {e}");
@@ -84,8 +108,6 @@ impl CaptureImpl for LinuxCapture {
                 }
             }
         }
-
-        // Blank frame fallback
         blank_frame(self.display_width, self.display_height)
     }
 }
@@ -95,16 +117,15 @@ impl CaptureImpl for LinuxCapture {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "x11-capture")]
-fn capture_x11(display: Option<&str>) -> Result<CapturedFrame> {
+fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
-    use x11rb::rust_connection::RustConnection;
 
-    let t0 = std::time::Instant::now();
-    let (conn, screen_num) = RustConnection::connect(display)
-        .context("failed to connect to X11 server — try: export DISPLAY=:0")?;
+    let conn = cap.x11_conn.as_ref()
+        .context("X11 connection not initialized")?;
+    let conn = conn.lock().unwrap();
 
-    let screen = &conn.setup().roots[screen_num];
+    let screen = &conn.setup().roots[cap.x11_screen_num];
     let root = screen.root;
 
     let geo = conn.get_geometry(root)?.reply()?;
@@ -112,6 +133,7 @@ fn capture_x11(display: Option<&str>) -> Result<CapturedFrame> {
     let h = geo.height as u32;
     let depth = geo.depth;
 
+    let t0 = std::time::Instant::now();
     let reply = conn
         .get_image(
             ImageFormat::Z_PIXMAP,
@@ -129,26 +151,19 @@ fn capture_x11(display: Option<&str>) -> Result<CapturedFrame> {
 
     let bgra = match depth {
         24 => {
-            // 24-bit ZPixmap: tightly packed BGR (3 bytes/pixel)
             let mut out = Vec::with_capacity(pixel_count * 4);
             for chunk in raw.chunks_exact(3) {
-                out.push(chunk[0]); // B
-                out.push(chunk[1]); // G
-                out.push(chunk[2]); // R
-                out.push(255);      // A
+                out.push(chunk[0]); out.push(chunk[1]); out.push(chunk[2]);
+                out.push(255);
             }
             out
         }
         32 => {
-            // 32-bit ZPixmap: BGRX (4 bytes/pixel, X = unused)
             let mut out = Vec::with_capacity(pixel_count * 4);
             for chunk in raw.chunks_exact(4) {
-                out.push(chunk[0]); // B
-                out.push(chunk[1]); // G
-                out.push(chunk[2]); // R
-                out.push(255);      // A (replace X)
+                out.push(chunk[0]); out.push(chunk[1]); out.push(chunk[2]);
+                out.push(255);
             }
-            // Pad if raw data shorter than expected
             let full = raw.len() / 4;
             for _ in full..pixel_count {
                 out.extend_from_slice(&[0, 0, 0, 255]);
@@ -156,28 +171,22 @@ fn capture_x11(display: Option<&str>) -> Result<CapturedFrame> {
             out
         }
         16 => {
-            // 16-bit: RGB565 → convert to BGRA
             let mut out = Vec::with_capacity(pixel_count * 4);
             for chunk in raw.chunks_exact(2) {
-                let pixel = u16::from_le_bytes([chunk[0], chunk[1]]);
-                let r = ((pixel >> 11) & 0x1F) as u8 * 255 / 31;
-                let g = ((pixel >> 5) & 0x3F) as u8 * 255 / 63;
-                let b = (pixel & 0x1F) as u8 * 255 / 31;
-                out.push(b);
-                out.push(g);
-                out.push(r);
-                out.push(255);
+                let p = u16::from_le_bytes([chunk[0], chunk[1]]);
+                let r = ((p >> 11) & 0x1F) as u8 * 255 / 31;
+                let g = ((p >> 5) & 0x3F) as u8 * 255 / 63;
+                let b = (p & 0x1F) as u8 * 255 / 31;
+                out.push(b); out.push(g); out.push(r); out.push(255);
             }
             out
         }
-        d => {
-            anyhow::bail!("unsupported X11 color depth: {d} (expected 16, 24, or 32)");
-        }
+        d => anyhow::bail!("unsupported X11 color depth: {d}"),
     };
 
     let elapsed = t0.elapsed();
     tracing::debug!(
-        "X11 capture: {}x{} depth={} {} bytes → {} bytes BGRA in {:?}",
+        "X11 capture: {}x{} depth={} {}B → {}B BGRA in {:?}",
         w, h, depth, raw.len(), bgra.len(), elapsed
     );
 
@@ -190,7 +199,7 @@ fn capture_x11(display: Option<&str>) -> Result<CapturedFrame> {
 }
 
 #[cfg(not(feature = "x11-capture"))]
-fn capture_x11(_display: Option<&str>) -> Result<CapturedFrame> {
+fn capture_x11_cached(_cap: &LinuxCapture) -> Result<CapturedFrame> {
     anyhow::bail!("x11-capture feature not enabled");
 }
 
