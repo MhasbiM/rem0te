@@ -111,6 +111,22 @@ export default function ConnectView({ onConnected }: Props) {
           setConnecting(false);
         }
         break;
+      case 'RequestConnection':
+        // Auto-accept incoming connection (production: prompt user)
+        wsRef.current?.send(JSON.stringify({
+          type: 'ConnectionResponse',
+          payload: {
+            from_peer: localPeerId,
+            accepted: true,
+            sdp: null,
+          },
+        }));
+        break;
+      case 'Error':
+        clearTimeout();
+        setConnecting(false);
+        setError(msg.payload?.message || 'Unknown error');
+        break;
     }
   };
 

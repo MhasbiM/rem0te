@@ -286,29 +286,65 @@ fn handle_signaling_message(state: &SignalingState, sender_id: &str, msg: Signal
             if let Some(tx) = state.ws_connections.get(sender_id) {
                 let _ = tx.send(json);
             }
-            // Send peer list
+            // Send peer list to the newly registered peer
             let list = SignalingMessage::PeerList { peers: state.get_peer_list() };
             let json = serde_json::to_string(&list).unwrap();
             if let Some(tx) = state.ws_connections.get(sender_id) {
                 let _ = tx.send(json);
             }
+            // Notify all peers about the new peer
+            let new_peer = PeerInfo {
+                peer_id: peer_id.clone(),
+                os: os.clone(),
+                hostname: hostname.clone(),
+                online: true,
+            };
+            let online_msg = SignalingMessage::PeerOnline { peer: new_peer };
+            let online_json = serde_json::to_string(&online_msg).unwrap();
+            for conn in state.ws_connections.iter() {
+                if conn.key() != sender_id {
+                    let _ = conn.value().send(online_json.clone());
+                }
+            }
         }
         SignalingMessage::RequestConnection { to_peer, .. } => {
-            // Forward to target peer
+            // Resolve peer_id -> internal connection ID
+            let target_id = state.peers.iter()
+                .find(|p| p.peer_id == *to_peer && p.online)
+                .map(|p| p.id.clone());
+
             let json = serde_json::to_string(&msg).unwrap();
-            if let Some(target) = state.ws_connections.get(to_peer) {
-                let _ = target.send(json);
-            } else if let Some(target) = state.tcp_connections.get(to_peer) {
-                let _ = target.0.send(json);
+            if let Some(ref id) = target_id {
+                if let Some(target) = state.ws_connections.get(id) {
+                    let _ = target.send(json);
+                    return;
+                } else if let Some(target) = state.tcp_connections.get(id) {
+                    let _ = target.0.send(json);
+                    return;
+                }
+            }
+            // Target not found - send error back to requestor
+            let error_msg = SignalingMessage::Error {
+                message: format!("Peer '{}' not found or offline", to_peer),
+            };
+            let error_json = serde_json::to_string(&error_msg).unwrap();
+            if let Some(tx) = state.ws_connections.get(sender_id) {
+                let _ = tx.send(error_json);
             }
         }
         SignalingMessage::ConnectionResponse { ref from_peer, .. } => {
-            // Forward response back to the requesting peer
+            // Resolve peer_id -> internal connection ID for from_peer (the original requestor)
+            let target_id = state.peers.iter()
+                .find(|p| p.peer_id == *from_peer && p.online)
+                .map(|p| p.id.clone());
+
             let json = serde_json::to_string(&msg).unwrap();
-            if let Some(target) = state.ws_connections.get(from_peer) {
-                let _ = target.send(json);
-            } else if let Some(target) = state.tcp_connections.get(from_peer) {
-                let _ = target.0.send(json);
+            if let Some(ref id) = target_id {
+                if let Some(target) = state.ws_connections.get(id) {
+                    let _ = target.send(json);
+                } else if let Some(target) = state.tcp_connections.get(id) {
+                    let _ = target.0.send(json);
+                }
             }
         }
         SignalingMessage::IceCandidate { ref to_peer, .. } => {
