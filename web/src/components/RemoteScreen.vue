@@ -36,24 +36,42 @@ watch(() => props.connected, (val) => {
 
 // ── Input handling ──────────────────────────────────────────────
 
-function getRelativeCoords(clientX: number, clientY: number): { x: number; y: number } {
-  if (!containerRef.value) return { x: 0, y: 0 }
-  const rect = containerRef.value.getBoundingClientRect()
+/// Calculate the actual rendered image rectangle within the container
+/// (accounts for `object-fit: contain` letterboxing).
+function getImageRect(): { left: number; top: number; width: number; height: number } | null {
+  const c = containerRef.value
+  if (!c) return null
+  const cr = c.getBoundingClientRect()
+  const dw = displayW.value
+  const dh = displayH.value
+  const scale = Math.min(cr.width / dw, cr.height / dh)
+  const iw = dw * scale
+  const ih = dh * scale
   return {
-    x: (clientX - rect.left) / rect.width,
-    y: (clientY - rect.top) / rect.height,
+    left: cr.left + (cr.width - iw) / 2,
+    top: cr.top + (cr.height - ih) / 2,
+    width: iw,
+    height: ih,
+  }
+}
+
+function getRelativeCoords(clientX: number, clientY: number): { x: number; y: number } {
+  const r = getImageRect()
+  if (!r) return { x: 0, y: 0 }
+  return {
+    x: (clientX - r.left) / r.width,
+    y: (clientY - r.top) / r.height,
   }
 }
 
 function onMouseMove(e: MouseEvent) {
   if (!props.currentMachine) return
-  const rect = containerRef.value?.getBoundingClientRect()
-  if (rect) {
-    cursorX.value = e.clientX - rect.left
-    cursorY.value = e.clientY - rect.top
+  const r = getImageRect()
+  if (r) {
+    cursorX.value = e.clientX - r.left
+    cursorY.value = e.clientY - r.top
     showCursor.value = true
   }
-  // Throttle to avoid flooding
   const { x, y } = getRelativeCoords(e.clientX, e.clientY)
   emit('inputEvent', {
     type: 'mouse_move',
@@ -195,8 +213,8 @@ onUnmounted(() => {
         class="cursor-overlay"
         :style="{ left: cursorX + 'px', top: cursorY + 'px' }"
       >
-        <svg width="20" height="28" viewBox="0 0 20 28" style="pointer-events:none">
-          <polygon points="0,0 14,10 8,10 12,20 7,20 4,11 0,14" fill="white" stroke="black" stroke-width="1.2"/>
+        <svg width="16" height="22" viewBox="0 0 16 22" style="pointer-events:none">
+          <polygon points="0,0 11,8 6,8 9,17 5,17 3,9 0,11" fill="white" stroke="black" stroke-width="1"/>
         </svg>
       </div>
 
