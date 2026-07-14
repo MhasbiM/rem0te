@@ -36,14 +36,14 @@ use crate::input::InputEngine;
 /// Max chunk size for data channel (must be < 64KB SCTP limit).
 const CHUNK_SIZE: usize = 60_000;
 
-/// JPEG quality.
-const JPEG_QUALITY: u8 = 58;
+/// Quality: Full HD, good quality.
+const JPEG_QUALITY: u8 = 68;
 
-/// Max width. 1600px is a good balance of quality and encoding speed.
-const MAX_FRAME_WIDTH: u32 = 1600;
+/// Max width: Full HD.
+const MAX_FRAME_WIDTH: u32 = 1920;
 
 /// Target FPS.
-const STREAM_FPS: u32 = 20;
+const STREAM_FPS: u32 = 25;
 
 /// Manages a WebRTC session for one remote viewer.
 pub struct WebRtcManager {
@@ -237,11 +237,12 @@ impl WebRtcManager {
                         frame_id = frame_id.wrapping_add(1);
                         let chunks = split_into_chunks(frame_id, &jpeg_bytes);
 
+                        // Fire-and-forget: don't block on send
                         for chunk in chunks {
-                            if video_dc.send(&bytes::Bytes::from(chunk)).await.is_err() {
-                                error!("failed to send chunk");
-                                return;
-                            }
+                            let dc = video_dc.clone();
+                            tokio::spawn(async move {
+                                let _ = dc.send(&bytes::Bytes::from(chunk)).await;
+                            });
                         }
 
                         frames_since_report += 1;
@@ -319,8 +320,7 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
 
     // JPEG encode
     let mut jpeg_bytes = Vec::new();
-    let mut encoder =
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, JPEG_QUALITY);
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, JPEG_QUALITY);
     encoder.encode(&img, out_w, out_h, image::ColorType::Rgb8.into())?;
 
     debug!("frame {}x{}→{}x{} JPEG {} bytes", frame.width, frame.height, out_w, out_h, jpeg_bytes.len());
