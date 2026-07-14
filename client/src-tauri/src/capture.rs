@@ -190,7 +190,9 @@ impl ScreenCapture {
     fn capture_x11(&mut self) -> Result<Vec<u8>> {
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::*;
+        use std::time::Instant;
 
+        let t0 = Instant::now();
         let conn = self.x11_conn.as_ref()
             .ok_or_else(|| anyhow::anyhow!("X11 not connected"))?;
         let screen = &conn.setup().roots[self.x11_screen_num];
@@ -205,21 +207,28 @@ impl ScreenCapture {
             .get_image(ImageFormat::Z_PIXMAP, root, 0, 0, geo.width, geo.height, u32::MAX)?
             .reply()?
             .data;
+        let t1 = Instant::now();
 
-        // BGRA → RGB (full resolution)
-        let rgb = bgra_to_rgb(&raw, w, h);
+        // 50% downscale with integer math (no f64!)
+        let (sw, sh) = (w / 2, h / 2);
+        let rgb = bgra_to_rgb_scaled_fast(&raw, w as usize, h as usize, sw as usize, sh as usize);
+        let t2 = Instant::now();
 
-        // mozjpeg: SIMD-accelerated JPEG encoding (~5-10x faster than image crate)
+        // mozjpeg SIMD encode
         let mut jpeg = Vec::new();
         {
             let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
-            comp.set_size(w as usize, h as usize);
+            comp.set_size(sw as usize, sh as usize);
             comp.set_quality(30.0);
-            comp.set_fastest_defaults(); // prioritize speed
+            comp.set_fastest_defaults();
             let mut comp = comp.start_compress(&mut jpeg)?;
             comp.write_scanlines(&rgb)?;
             comp.finish()?;
         }
+        let t3 = Instant::now();
+        log::info!("capture: {}ms, convert: {}ms, encode: {}ms, size: {}KB",
+            (t1-t0).as_millis(), (t2-t1).as_millis(), (t3-t2).as_millis(), jpeg.len()/1024);
+
         self.last_frame = jpeg.clone();
         Ok(jpeg)
     }
@@ -261,6 +270,28 @@ fn bgra_to_rgba(bgra: &[u8], w: u32, h: u32) -> Vec<u8> {
         dst[3] = src[3]; // A
     }
     rgba
+}
+
+/// Fast BGRA→RGB with integer downscale (no float math!)
+fn bgra_to_rgb_scaled_fast(bgra: &[u8], w: usize, h: usize, sw: usize, sh: usize) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(sw * sh * 3);
+    let row_bytes = w * 4;
+    for sy in 0..sh {
+        let y = sy * h / sh;
+        let row = y * row_bytes;
+        for sx in 0..sw {
+            let x = sx * w / sw;
+            let i = row + x * 4;
+            if i + 3 < bgra.len() {
+                rgb.push(bgra[i + 2]);
+                rgb.push(bgra[i + 1]);
+                rgb.push(bgra[i]);
+            } else {
+                rgb.extend_from_slice(&[0, 0, 0]);
+            }
+        }
+    }
+    rgb
 }
 
 /// BGRA → RGB with 2x downscale (nearest-neighbor, fast)
