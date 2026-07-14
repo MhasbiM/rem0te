@@ -77,19 +77,27 @@ export default function ConnectView({ onConnected }: Props) {
     };
 
     ws.onmessage = (event) => {
+      let msg;
       try {
-        const msg = JSON.parse(event.data);
+        msg = JSON.parse(event.data);
+      } catch {
+        console.error('[rem0te] JSON parse failed. Raw:', String(event.data).substring(0, 300));
+        return;
+      }
+      try {
         console.log('[rem0te] WS recv:', msg.type, msg.payload);
         handleSignalingMessage(msg);
-      } catch { console.error('[rem0te] Invalid signaling message'); }
+      } catch (e) {
+        console.error('[rem0te] Handler error for', msg?.type, ':', e);
+      }
     };
 
     ws.onerror = () => { setError('Cannot reach signaling server'); setWsConnected(false); };
     ws.onclose = () => setWsConnected(false);
   };
 
-  const clearTimeout = () => {
-    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+  const cancelTimer = () => {
+    if (timeoutRef.current) { window.clearTimeout(timeoutRef.current); timeoutRef.current = null; }
   };
 
   const handleSignalingMessage = (msg: any) => {
@@ -109,7 +117,7 @@ export default function ConnectView({ onConnected }: Props) {
         setPeers((prev) => prev.map((x) => (x.peer_id === msg.payload.peer_id ? { ...x, online: false } : x)));
         break;
       case 'ConnectionResponse':
-        clearTimeout();
+        cancelTimer();
         if (msg.payload.accepted) {
           const peer = peers.find((p) => p.peer_id === msg.payload.from_peer);
           onConnected({ peerId: msg.payload.from_peer, hostname: peer?.hostname || 'Remote', os: peer?.os || 'Unknown' });
@@ -131,7 +139,7 @@ export default function ConnectView({ onConnected }: Props) {
         }));
         break;
       case 'Error':
-        clearTimeout();
+        cancelTimer();
         setConnecting(false);
         setError(msg.payload?.message || 'Unknown error');
         break;
