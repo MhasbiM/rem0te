@@ -177,55 +177,50 @@ async fn start_ffmpeg_pipe(
         .context("ffmpeg not found, install: sudo apt install ffmpeg")?;
 
     let stdout = child.stdout.take().unwrap();
-    let mut reader = tokio::io::BufReader::new(stdout);
-    let mut buf = Vec::new();
+    let mut reader = tokio::io::BufReader::with_capacity(256*1024, stdout);
+    let mut buf: Vec<u8> = Vec::with_capacity(512*1024);
+    let mut chunk = vec![0u8; 65536];
 
-    // Read MJPEG stream: frames delimited by JPEG SOI marker
     loop {
         {
             let mgr = manager_arc.lock().await;
             if mgr.role != SessionRole::Target { break; }
         }
+        let n = match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > 2_000_000 { buf.clear(); }
 
-        // Read until next JPEG start marker
-        let mut byte = [0u8];
-        buf.clear();
-        // Find SOI (0xFF 0xD8)
-        loop {
-            if reader.read_exact(&mut byte).await.is_err() { return Ok(()); }
-            buf.push(byte[0]);
-            if buf.len() >= 2 && buf[buf.len()-2] == 0xFF && buf[buf.len()-1] == 0xD8 {
-                break;
-            }
-            if buf.len() > 100_000 { buf.clear(); } // safety
-        }
+        // Extract complete JPEG frames
+        while let Some(end) = find_jpeg_frame(&buf) {
+            let frame = buf[..end].to_vec();
+            buf.drain(..end);
+            if frame.len() < 1000 { continue; }
 
-        // Read until EOI (0xFF 0xD9)
-        loop {
-            if reader.read_exact(&mut byte).await.is_err() { return Ok(()); }
-            buf.push(byte[0]);
-            if buf.len() >= 2 && buf[buf.len()-2] == 0xFF && buf[buf.len()-1] == 0xD9 {
-                break;
-            }
-            if buf.len() > 500_000 { break; } // safety
-        }
-
-        if buf.len() < 1000 { continue; } // skip tiny frames
-
-        // Send frame via relay
-        let mut writer_opt = writer_arc.lock().await;
-        if let Some(ref mut w) = *writer_opt {
-            let total_len = (1 + 4 + buf.len()) as u32;
-            let mut header = [0u8; 9];
-            header[..4].copy_from_slice(&total_len.to_be_bytes());
-            header[4] = relay_client::MSG_FRAME;
-            header[5..9].copy_from_slice(&(buf.len() as u32).to_be_bytes());
-            if w.write_all(&header).await.is_err() || w.write_all(&buf).await.is_err() {
-                break;
+            let mut writer_opt = writer_arc.lock().await;
+            if let Some(ref mut w) = *writer_opt {
+                let total_len = (1 + 4 + frame.len()) as u32;
+                let mut hdr = [0u8; 9];
+                hdr[..4].copy_from_slice(&total_len.to_be_bytes());
+                hdr[4] = relay_client::MSG_FRAME;
+                hdr[5..9].copy_from_slice(&(frame.len() as u32).to_be_bytes());
+                if w.write_all(&hdr).await.is_err() || w.write_all(&frame).await.is_err() {
+                    return Ok(());
+                }
             }
         }
     }
     Ok(())
+}
+
+/// Find complete JPEG frame (SOI 0xFFD8 ... EOI 0xFFD9), returns position after frame
+fn find_jpeg_frame(buf: &[u8]) -> Option<usize> {
+    let soi = buf.windows(2).position(|w| w == [0xFF, 0xD8])?;
+    let eoi = buf[soi+2..].windows(2).position(|w| w == [0xFF, 0xD9])?;
+    Some(soi + 2 + eoi + 2)
 }
 
 #[cfg(not(target_os = "linux"))]
