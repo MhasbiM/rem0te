@@ -18,15 +18,11 @@ interface Props {
 
 export default function RemoteView({ connection, onDisconnect }: Props) {
   const [fullscreen, setFullscreen] = useState(false);
-  const [frameData, setFrameData] = useState<string | null>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [fps, setFps] = useState(0);
   const canvasRef = useRef<HTMLDivElement>(null);
   const frameCountRef = useRef(0);
   const lastFpsTime = useRef(Date.now());
-
-  // Listen for incoming frames from Tauri backend
-  const [streamUrl, setStreamUrl] = useState<string | null>(null);
 
   useEffect(() => {
     // Listen for stream-ready event from backend
