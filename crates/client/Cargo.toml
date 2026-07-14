@@ -64,8 +64,7 @@ evdev = { version = "0.12", optional = true }
 # X11 capture (pure Rust)
 x11rb = { version = "0.13", optional = true, features = ["allow-unsafe-code"] }
 
-# Input injection (uses XTest via x11rb)
-enigo = { version = "0.3", default-features = false, features = ["x11rb"] }
+# Input injection (uses XTest via x11rb — already included)
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreGraphics for screen capture & input
