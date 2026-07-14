@@ -60,13 +60,14 @@ async fn start_viewing(
                 let mut len_buf = [0u8; 4];
                 if r.read_exact(&mut len_buf).await.is_err() { break; }
                 let total_len = u32::from_be_bytes(len_buf) as usize;
-                let mut buf = vec![0u8; total_len.min(262144)];
+                if total_len == 0 || total_len > 10_000_000 { break; } // safety
+                let mut buf = vec![0u8; total_len];
                 if r.read_exact(&mut buf).await.is_err() { break; }
                 if buf.len() < 9 { continue; }
                 let msg_type = buf[0];
                 if msg_type == relay_client::MSG_FRAME {
-                    let payload_len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-                    let payload = &buf[5..(5+payload_len).min(buf.len())];
+                    let plen = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                    let payload = &buf[5..(5+plen).min(buf.len())];
                     let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
                     let _ = app.emit("remote-frame", b64);
                 }
@@ -151,17 +152,17 @@ async fn start_serving(
             }
             let mut reader_opt = reader_arc.lock().await;
             if let Some(ref mut r) = *reader_opt {
-                // Read framed message
                 let mut len_buf = [0u8; 4];
                 if r.read_exact(&mut len_buf).await.is_err() { break; }
                 let total_len = u32::from_be_bytes(len_buf) as usize;
-                let mut buf = vec![0u8; total_len.min(65536)];
+                if total_len == 0 || total_len > 10_000_000 { break; }
+                let mut buf = vec![0u8; total_len];
                 if r.read_exact(&mut buf).await.is_err() { break; }
                 if buf.is_empty() { continue; }
                 let msg_type = buf[0];
                 if msg_type == relay_client::MSG_INPUT && buf.len() >= 9 {
-                    let payload_len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-                    let payload = &buf[5..(5+payload_len).min(buf.len())];
+                    let plen = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                    let payload = &buf[5..(5+plen).min(buf.len())];
                     if let Ok(event) = serde_json::from_slice::<serde_json::Value>(payload) {
                         #[cfg(target_os = "linux")]
                         simulate_input(&event);

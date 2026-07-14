@@ -189,7 +189,6 @@ impl ScreenCapture {
     #[cfg(target_os = "linux")]
     fn capture_x11(&mut self) -> Result<Vec<u8>> {
         use image::ImageEncoder;
-        use image::codecs::png::{PngEncoder, CompressionType, FilterType};
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::*;
 
@@ -208,18 +207,15 @@ impl ScreenCapture {
             .reply()?
             .data;
 
-        // Fast PNG encode: no filter + fast compression (much faster than JPEG)
-        let mut png = Vec::new();
-        let encoder = PngEncoder::new_with_quality(
-            &mut png,
-            CompressionType::Fast,
-            FilterType::NoFilter,
-        );
-        // X11 Z_PIXMAP is BGRA → RGBA (swap R/B)
-        let rgba = bgra_to_rgba(&raw, w, h);
-        encoder.write_image(&rgba, w, h, image::ExtendedColorType::Rgba8)?;
-        self.last_frame = png.clone();
-        Ok(png)
+        // 50% downscale + BGRA→RGB + JPEG quality 15 (fast, small)
+        let (sw, sh) = (w / 2, h / 2);
+        let rgb = bgra_to_rgb_scaled(&raw, w, h, sw, sh);
+
+        let mut jpeg = Vec::new();
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 15);
+        encoder.write_image(&rgb, sw, sh, image::ExtendedColorType::Rgb8)?;
+        self.last_frame = jpeg.clone();
+        Ok(jpeg)
     }
 
     #[cfg(target_os = "linux")]
