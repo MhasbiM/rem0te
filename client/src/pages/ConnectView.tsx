@@ -50,7 +50,11 @@ export default function ConnectView({ onConnected }: Props) {
   useEffect(() => {
     setLocalHostname(navigator.platform || 'Unknown');
     return () => {
-      wsRef.current?.close();
+      // Only close WS if not connected to a remote session
+      if (!isServing && !connecting) {
+        wsRef.current?.close();
+        (window as any).__rem0te_ws = null;
+      }
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, []);
@@ -64,6 +68,7 @@ export default function ConnectView({ onConnected }: Props) {
 
     ws.onopen = () => {
       setWsConnected(true);
+      (window as any).__rem0te_ws = ws;
       localStorage.setItem('rem0te_server', serverAddr);
       // Generate stable peer_id if not set yet
       const myPeerId = localPeerId || `peer-${Math.random().toString(36).slice(2, 10)}`;
@@ -175,6 +180,22 @@ export default function ConnectView({ onConnected }: Props) {
       case 'SessionEnd':
         console.log('[rem0te] Session ended by peer');
         stopServing();
+        break;
+      case 'InputEvent':
+        // Target receives input from viewer
+        if (msg.payload.event) {
+          try {
+            const evt = JSON.parse(msg.payload.event);
+            console.log('[rem0te] Input received:', evt.type);
+            invoke('send_input_event', {
+              eventType: evt.type || '',
+              keyCode: evt.key_code || null,
+              x: evt.x || null,
+              y: evt.y || null,
+              button: evt.button || null,
+            }).catch(() => {});
+          } catch {}
+        }
         break;
       case 'Error':
         cancelTimer();

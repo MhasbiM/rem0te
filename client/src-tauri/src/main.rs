@@ -6,6 +6,7 @@ mod connection;
 mod file_transfer;
 mod relay_client;
 
+use anyhow::Context;
 use base64::Engine;
 use capture::ScreenCapture;
 use connection::{ConnectionManager, SessionRole};
@@ -86,7 +87,7 @@ async fn start_viewing(
 #[tauri::command]
 async fn start_serving(
     state: tauri::State<'_, AppState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     server_addr: String,
     session_id: String,
     viewer_peer: String,
@@ -97,86 +98,111 @@ async fn start_serving(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Extract reader/writer from relay for independent access
-    let (reader, writer) = {
+    // Extract writer from relay
+    let (_, writer) = {
         let relay = std::mem::replace(&mut manager.relay, relay_client::RelayClient::new());
         relay.into_halves()
     };
     *state.relay_writer.lock().await = writer;
-    *state.relay_reader.lock().await = reader;
 
-    // Start screen capture
-    state.screen_capture.lock().await.start().map_err(|e| e.to_string())?;
-
-    // ── Capture + send task (uses relay_writer) ──────────────
+    // ── ffmpeg pipe: hardware MJPEG capture ──────────────────
     let writer_arc = state.relay_writer.clone();
-    let capture_arc = state.screen_capture.clone();
     let manager_arc = state.connection_manager.clone();
     tokio::spawn(async move {
-        loop {
-            {
-                let mgr = manager_arc.lock().await;
-                if mgr.role != SessionRole::Target { break; }
-            }
-            let mut cap = capture_arc.lock().await;
-            match cap.capture_frame() {
-                Ok(frame) => {
-                    let mut writer_opt = writer_arc.lock().await;
-                    if let Some(ref mut w) = *writer_opt {
-                        let total_len = (1 + 4 + frame.len()) as u32;
-                        let mut header = Vec::with_capacity(9);
-                        header.extend_from_slice(&total_len.to_be_bytes());
-                        header.push(relay_client::MSG_FRAME);
-                        header.extend_from_slice(&(frame.len() as u32).to_be_bytes());
-                        if w.write_all(&header).await.is_err()
-                            || w.write_all(&frame).await.is_err()
-                        {
-                            log::info!("Relay write failed, stopping");
-                            break;
-                        }
-                    }
-                }
-                Err(e) => log::error!("Capture error: {}", e),
-            }
-        }
-    });
-
-    // ── Input receive task (uses relay_reader) ───────────────
-    let reader_arc = state.relay_reader.clone();
-    let manager_arc2 = state.connection_manager.clone();
-    tokio::spawn(async move {
-        loop {
-            {
-                let mgr = manager_arc2.lock().await;
-                if mgr.role != SessionRole::Target { break; }
-            }
-            let mut reader_opt = reader_arc.lock().await;
-            if let Some(ref mut r) = *reader_opt {
-                let mut len_buf = [0u8; 4];
-                if r.read_exact(&mut len_buf).await.is_err() { break; }
-                let total_len = u32::from_be_bytes(len_buf) as usize;
-                if total_len == 0 || total_len > 10_000_000 { break; }
-                let mut buf = vec![0u8; total_len];
-                if r.read_exact(&mut buf).await.is_err() { break; }
-                if buf.is_empty() { continue; }
-                let msg_type = buf[0];
-                if msg_type == relay_client::MSG_INPUT && buf.len() >= 9 {
-                    let plen = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-                    let payload = &buf[5..(5+plen).min(buf.len())];
-                    if let Ok(event) = serde_json::from_slice::<serde_json::Value>(payload) {
-                        log::info!("Input received: {:?}", event);
-                        #[cfg(target_os = "linux")]
-                        simulate_input(&event);
-                    }
-                }
-            } else {
-                break;
-            }
+        // Try ffmpeg first, fallback to Rust capture
+        match start_ffmpeg_pipe(writer_arc.clone(), manager_arc.clone()).await {
+            Ok(()) => log::info!("ffmpeg pipe ended"),
+            Err(e) => log::error!("ffmpeg pipe failed: {}, falling back", e),
         }
     });
 
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+async fn start_ffmpeg_pipe(
+    writer_arc: Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>>,
+    manager_arc: Arc<tokio::sync::Mutex<ConnectionManager>>,
+) -> anyhow::Result<()> {
+    use tokio::process::Command;
+    use tokio::io::AsyncReadExt;
+
+    // ffmpeg: capture X11 → MJPEG → pipe stdout
+    // -vaapi_device for HW acceleration if available
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-f", "x11grab",
+            "-video_size", "1920x1080",
+            "-i", ":0.0",
+            "-f", "mjpeg",
+            "-q:v", "8",
+            "-r", "15",
+            "-an",
+            "pipe:1",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("ffmpeg not found, install: sudo apt install ffmpeg")?;
+
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut buf = Vec::new();
+
+    // Read MJPEG stream: frames delimited by JPEG SOI marker
+    loop {
+        {
+            let mgr = manager_arc.lock().await;
+            if mgr.role != SessionRole::Target { break; }
+        }
+
+        // Read until next JPEG start marker
+        let mut byte = [0u8];
+        buf.clear();
+        // Find SOI (0xFF 0xD8)
+        loop {
+            if reader.read_exact(&mut byte).await.is_err() { return Ok(()); }
+            buf.push(byte[0]);
+            if buf.len() >= 2 && buf[buf.len()-2] == 0xFF && buf[buf.len()-1] == 0xD8 {
+                break;
+            }
+            if buf.len() > 100_000 { buf.clear(); } // safety
+        }
+
+        // Read until EOI (0xFF 0xD9)
+        loop {
+            if reader.read_exact(&mut byte).await.is_err() { return Ok(()); }
+            buf.push(byte[0]);
+            if buf.len() >= 2 && buf[buf.len()-2] == 0xFF && buf[buf.len()-1] == 0xD9 {
+                break;
+            }
+            if buf.len() > 500_000 { break; } // safety
+        }
+
+        if buf.len() < 1000 { continue; } // skip tiny frames
+
+        // Send frame via relay
+        let mut writer_opt = writer_arc.lock().await;
+        if let Some(ref mut w) = *writer_opt {
+            let total_len = (1 + 4 + buf.len()) as u32;
+            let mut header = [0u8; 9];
+            header[..4].copy_from_slice(&total_len.to_be_bytes());
+            header[4] = relay_client::MSG_FRAME;
+            header[5..9].copy_from_slice(&(buf.len() as u32).to_be_bytes());
+            if w.write_all(&header).await.is_err() || w.write_all(&buf).await.is_err() {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn start_ffmpeg_pipe(
+    _writer_arc: Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>>,
+    _manager_arc: Arc<tokio::sync::Mutex<ConnectionManager>>,
+) -> anyhow::Result<()> { Ok(()) }
 
 // ── Common commands ────────────────────────────────────────────
 

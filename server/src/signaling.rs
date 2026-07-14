@@ -66,6 +66,11 @@ pub enum SignalingMessage {
         from_peer: String,
         to_peer: String,
     },
+    InputEvent {
+        from_peer: String,
+        to_peer: String,
+        event: String, // JSON-encoded event
+    },
     Error {
         message: String,
     },
@@ -389,6 +394,17 @@ fn handle_signaling_message(state: &SignalingState, sender_id: &str, msg: Signal
                 .find(|p| p.peer_id == *to_peer && p.online)
                 .map(|p| p.id.clone());
             log::info!("SessionEnd: to_peer={}, resolved={:?}", to_peer, target_id);
+            let json = serde_json::to_string(&msg).unwrap();
+            if let Some(ref id) = target_id {
+                if let Some(target) = state.ws_connections.get(id) {
+                    let _ = target.send(json);
+                }
+            }
+        }
+        SignalingMessage::InputEvent { ref to_peer, .. } => {
+            let target_id = state.peers.iter()
+                .find(|p| p.peer_id == *to_peer && p.online)
+                .map(|p| p.id.clone());
             let json = serde_json::to_string(&msg).unwrap();
             if let Some(ref id) = target_id {
                 if let Some(target) = state.ws_connections.get(id) {

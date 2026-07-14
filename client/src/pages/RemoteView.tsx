@@ -62,19 +62,18 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
   // ── Input forwarding ──────────────────────────────────────────
 
   const sendInput = useCallback((type_: string, payload: Record<string, unknown>) => {
-    console.log('[rem0te] sendInput:', type_, payload);
-    invoke('send_input_event', {
-      eventType: type_,
-      keyCode: payload.key_code || null,
-      x: payload.x || null,
-      y: payload.y || null,
-      button: payload.button || null,
-    }).then(() => {
-      console.log('[rem0te] sendInput OK:', type_);
-    }).catch((e) => {
-      console.error('[rem0te] sendInput FAIL:', type_, e);
-    });
-  }, []);
+    const ws = (window as any).__rem0te_ws;
+    if (ws && ws.readyState === WebSocket.OPEN && connection) {
+      ws.send(JSON.stringify({
+        type: 'InputEvent',
+        payload: {
+          from_peer: '',
+          to_peer: connection.peerId,
+          event: JSON.stringify({ type: type_, ...payload }),
+        },
+      }));
+    }
+  }, [connection]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
