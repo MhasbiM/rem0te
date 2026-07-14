@@ -300,9 +300,11 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
         if cur.x < frame.width && cur.y < frame.height {
             draw_cursor(&mut rgb, frame.width, frame.height, cur.x, cur.y);
             debug!("cursor drawn at ({}, {})", cur.x, cur.y);
+        } else {
+            info!("cursor out of bounds: ({}, {}) vs frame {}x{}", cur.x, cur.y, frame.width, frame.height);
         }
     } else {
-        info!("no cursor position — cursor will not appear on remote");
+        info!("no cursor position from capture engine — cursor not drawn");
     }
 
     let src_img = image::RgbImage::from_raw(frame.width, frame.height, rgb)
@@ -325,13 +327,11 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
     Ok(jpeg_bytes)
 }
 
-/// Draw a visible arrow cursor on the RGB pixel buffer.
-/// The cursor tip is at (cx, cy), pointing up-left (standard arrow).
+/// Draw a highly visible arrow cursor. 2x scaled for Full HD, red fill.
 fn draw_cursor(rgb: &mut [u8], width: u32, height: u32, cx: u32, cy: u32) {
-    // 16x24 pixel arrow cursor (scaled for visibility on Full HD)
-    // Shape: 1 = filled, 0 = empty (outline only)
+    // 16x24 arrow shape (1 = filled, 0 = empty)
     #[rustfmt::skip]
-    let cursor_shape: [[u8; 16]; 24] = [
+    let shape: [[u8; 16]; 24] = [
         [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
         [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
         [1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
@@ -358,44 +358,37 @@ fn draw_cursor(rgb: &mut [u8], width: u32, height: u32, cx: u32, cy: u32) {
         [0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0],
     ];
 
-    let rows = cursor_shape.len() as u32;
-    let cols = cursor_shape[0].len() as u32;
-
+    let scale: u32 = 2; // 2x scale for visibility on Full HD
+    let red: [u8; 3] = [220, 30, 30];
     let black: [u8; 3] = [0, 0, 0];
-    let white: [u8; 3] = [255, 255, 255];
 
-    for row in 0..rows {
-        for col in 0..cols {
-            let px = cx as i32 + col as i32;
-            let py = cy as i32 + row as i32;
-
-            if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
+    for row in 0..24u32 {
+        for col in 0..16u32 {
+            if shape[row as usize][col as usize] == 0 {
                 continue;
             }
+            let is_border = col == 0 || col == 15 || row == 0 || row == 23
+                || (col > 0 && shape[row as usize][col as usize - 1] == 0)
+                || (col < 15 && shape[row as usize][col as usize + 1] == 0)
+                || (row > 0 && shape[row as usize - 1][col as usize] == 0)
+                || (row < 23 && shape[row as usize + 1][col as usize] == 0);
 
-            let idx = ((py as u32) * width + (px as u32)) as usize * 3;
-            if idx + 2 >= rgb.len() {
-                continue;
-            }
+            let color = if is_border { &black } else { &red };
 
-            if cursor_shape[row as usize][col as usize] == 1 {
-                // Filled pixel: black outline, white interior
-                // Draw white first, then black border
-                rgb[idx] = white[0];
-                rgb[idx + 1] = white[1];
-                rgb[idx + 2] = white[2];
-
-                // Check neighbors — if any neighbor is 0, this is a border pixel
-                let is_border = col == 0 || col == cols - 1 || row == 0 || row == rows - 1
-                    || (col > 0 && cursor_shape[row as usize][col as usize - 1] == 0)
-                    || (col + 1 < cols && cursor_shape[row as usize][col as usize + 1] == 0)
-                    || (row > 0 && cursor_shape[row as usize - 1][col as usize] == 0)
-                    || (row + 1 < rows && cursor_shape[row as usize + 1][col as usize] == 0);
-
-                if is_border {
-                    rgb[idx] = black[0];
-                    rgb[idx + 1] = black[1];
-                    rgb[idx + 2] = black[2];
+            // Draw scaled pixel block
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let px = cx as i32 + (col * scale + dx) as i32;
+                    let py = cy as i32 + (row * scale + dy) as i32;
+                    if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
+                        continue;
+                    }
+                    let idx = ((py as u32) * width + (px as u32)) as usize * 3;
+                    if idx + 2 < rgb.len() {
+                        rgb[idx] = color[0];
+                        rgb[idx + 1] = color[1];
+                        rgb[idx + 2] = color[2];
+                    }
                 }
             }
         }
