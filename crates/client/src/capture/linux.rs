@@ -40,10 +40,19 @@ impl LinuxCapture {
 
         // Try to find a working X11 display
         let display = find_x11_display();
+        let x11_ok = display.is_some() && cfg!(feature = "x11-capture");
         if let Some(ref dpy) = display {
-            tracing::info!("X11 display '{}' — using x11rb for screen capture", dpy);
+            tracing::info!(
+                "X11 display '{}' found — capture {} (feature x11-capture: {})",
+                dpy,
+                if x11_ok { "ENABLED" } else { "DISABLED (feature off)" },
+                cfg!(feature = "x11-capture")
+            );
         } else {
-            tracing::warn!("No X11 display found (try: export DISPLAY=:0). Falling back to blank frames.");
+            tracing::warn!(
+                "No X11 display found ($DISPLAY={:?}, tried :0, :1). Video will be black.",
+                std::env::var("DISPLAY").ok()
+            );
         }
 
         Ok(Self {
@@ -91,6 +100,7 @@ fn capture_x11(display: Option<&str>) -> Result<CapturedFrame> {
     use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
     use x11rb::rust_connection::RustConnection;
 
+    let t0 = std::time::Instant::now();
     let (conn, screen_num) = RustConnection::connect(display)
         .context("failed to connect to X11 server — try: export DISPLAY=:0")?;
 
@@ -100,6 +110,7 @@ fn capture_x11(display: Option<&str>) -> Result<CapturedFrame> {
     let geo = conn.get_geometry(root)?.reply()?;
     let w = geo.width as u32;
     let h = geo.height as u32;
+    let depth = geo.depth;
 
     let reply = conn
         .get_image(
@@ -113,25 +124,62 @@ fn capture_x11(display: Option<&str>) -> Result<CapturedFrame> {
         )?
         .reply()?;
 
-    // X11 ZPixmap: BGRX (little-endian) → convert to BGRA
     let raw = reply.data;
     let pixel_count = (w as usize) * (h as usize);
-    let mut bgra = Vec::with_capacity(pixel_count * 4);
 
-    for chunk in raw.chunks_exact(4) {
-        bgra.push(chunk[0]); // B
-        bgra.push(chunk[1]); // G
-        bgra.push(chunk[2]); // R
-        bgra.push(255);      // A (opaque)
-    }
-
-    // Pad if image depth is 24-bit (3 bytes/pixel)
-    let full_chunks = raw.len() / 4;
-    if full_chunks < pixel_count {
-        for _ in full_chunks..pixel_count {
-            bgra.extend_from_slice(&[0, 0, 0, 255]);
+    let bgra = match depth {
+        24 => {
+            // 24-bit ZPixmap: tightly packed BGR (3 bytes/pixel)
+            let mut out = Vec::with_capacity(pixel_count * 4);
+            for chunk in raw.chunks_exact(3) {
+                out.push(chunk[0]); // B
+                out.push(chunk[1]); // G
+                out.push(chunk[2]); // R
+                out.push(255);      // A
+            }
+            out
         }
-    }
+        32 => {
+            // 32-bit ZPixmap: BGRX (4 bytes/pixel, X = unused)
+            let mut out = Vec::with_capacity(pixel_count * 4);
+            for chunk in raw.chunks_exact(4) {
+                out.push(chunk[0]); // B
+                out.push(chunk[1]); // G
+                out.push(chunk[2]); // R
+                out.push(255);      // A (replace X)
+            }
+            // Pad if raw data shorter than expected
+            let full = raw.len() / 4;
+            for _ in full..pixel_count {
+                out.extend_from_slice(&[0, 0, 0, 255]);
+            }
+            out
+        }
+        16 => {
+            // 16-bit: RGB565 → convert to BGRA
+            let mut out = Vec::with_capacity(pixel_count * 4);
+            for chunk in raw.chunks_exact(2) {
+                let pixel = u16::from_le_bytes([chunk[0], chunk[1]]);
+                let r = ((pixel >> 11) & 0x1F) as u8 * 255 / 31;
+                let g = ((pixel >> 5) & 0x3F) as u8 * 255 / 63;
+                let b = (pixel & 0x1F) as u8 * 255 / 31;
+                out.push(b);
+                out.push(g);
+                out.push(r);
+                out.push(255);
+            }
+            out
+        }
+        d => {
+            anyhow::bail!("unsupported X11 color depth: {d} (expected 16, 24, or 32)");
+        }
+    };
+
+    let elapsed = t0.elapsed();
+    tracing::debug!(
+        "X11 capture: {}x{} depth={} {} bytes → {} bytes BGRA in {:?}",
+        w, h, depth, raw.len(), bgra.len(), elapsed
+    );
 
     Ok(CapturedFrame {
         data: bgra,
