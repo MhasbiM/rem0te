@@ -176,20 +176,26 @@ impl ScreenCapture {
         let screen = &conn.setup().roots[screen_num];
         let root = screen.root;
         let geo = conn.get_geometry(root)?.reply()?;
-        self.width = geo.width as u32;
-        self.height = geo.height as u32;
+        let w = geo.width as u32;
+        let h = geo.height as u32;
+        self.width = w;
+        self.height = h;
+
+        // Downscale to 50% for faster encoding & transfer
+        let (sw, sh) = (w / 2, h / 2);
 
         let raw = conn
             .get_image(ImageFormat::Z_PIXMAP, root, 0, 0, geo.width, geo.height, u32::MAX)?
             .reply()?
             .data;
 
-        // X11 Z_PIXMAP returns BGRA (4 bytes per pixel), JPEG needs RGB
-        let rgb = bgra_to_rgb(&raw, geo.width as u32, geo.height as u32);
+        // BGRA → RGB, with 2x downscale (simple nearest-neighbor)
+        let rgb = bgra_to_rgb_scaled(&raw, w, h, sw, sh);
 
         let mut jpeg = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 70);
-        encoder.write_image(&rgb, geo.width as u32, geo.height as u32, image::ExtendedColorType::Rgb8)?;
+        // Quality 40 = smaller files, faster encode
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 40);
+        encoder.write_image(&rgb, sw, sh, image::ExtendedColorType::Rgb8)?;
         self.last_frame = jpeg.clone();
         Ok(jpeg)
     }
@@ -220,26 +226,29 @@ impl ScreenCapture {
     }
 }
 
-/// Convert BGRA raw bytes (X11 Z_PIXMAP format) to RGB (JPEG-compatible)
-fn bgra_to_rgb(bgra: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let pixels = (width * height) as usize;
-    let mut rgb = Vec::with_capacity(pixels * 3);
-    // BGRA: bytes per row may include padding, but for now assume tightly packed
-    let row_bytes = (width * 4) as usize;
-    for y in 0..height as usize {
-        let row_start = y * row_bytes;
-        for x in 0..width as usize {
-            let i = row_start + x * 4;
+/// BGRA → RGB with 2x downscale (nearest-neighbor, fast)
+fn bgra_to_rgb_scaled(bgra: &[u8], w: u32, h: u32, sw: u32, sh: u32) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity((sw * sh * 3) as usize);
+    let row_bytes = (w * 4) as usize;
+    for sy in 0..sh {
+        let y = (sy as u64 * h as u64 / sh as u64) as usize;
+        let row = y * row_bytes;
+        for sx in 0..sw {
+            let x = (sx as u64 * w as u64 / sw as u64) as usize;
+            let i = row + x * 4;
             if i + 3 < bgra.len() {
-                rgb.push(bgra[i + 2]); // R (from B)
+                rgb.push(bgra[i + 2]); // R
                 rgb.push(bgra[i + 1]); // G
-                rgb.push(bgra[i]);     // B (from R)
+                rgb.push(bgra[i]);     // B
             } else {
-                rgb.push(0);
-                rgb.push(0);
-                rgb.push(0);
+                rgb.extend_from_slice(&[0, 0, 0]);
             }
         }
     }
     rgb
+}
+
+#[allow(dead_code)]
+fn bgra_to_rgb(bgra: &[u8], width: u32, height: u32) -> Vec<u8> {
+    bgra_to_rgb_scaled(bgra, width, height, width, height)
 }

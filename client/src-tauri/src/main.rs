@@ -100,8 +100,8 @@ async fn start_serving(
             }
             drop(cap);
             drop(mgr);
-            // ~30 FPS target (sleep 33ms between frames)
-            tokio::time::sleep(tokio::time::Duration::from_millis(33)).await;
+            // Target ~20 FPS — skip frame if previous took too long
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
     });
 
