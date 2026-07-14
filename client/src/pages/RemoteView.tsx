@@ -72,7 +72,16 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
           event: JSON.stringify({ type: type_, ...payload }),
         },
       }));
+      return;
     }
+    // Fallback: try relay
+    invoke('send_input_event', {
+      eventType: type_,
+      keyCode: payload.key_code || null,
+      x: payload.x || null,
+      y: payload.y || null,
+      button: payload.button || null,
+    }).catch(() => {});
   }, [connection]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {

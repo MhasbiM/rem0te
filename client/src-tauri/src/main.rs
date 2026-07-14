@@ -105,14 +105,43 @@ async fn start_serving(
     };
     *state.relay_writer.lock().await = writer;
 
-    // ── ffmpeg pipe: hardware MJPEG capture ──────────────────
+    // ── Try ffmpeg pipe first, fallback to Rust capture ──────
     let writer_arc = state.relay_writer.clone();
     let manager_arc = state.connection_manager.clone();
+    let capture_arc = state.screen_capture.clone();
+
+    // Start screen capture for fallback
+    capture_arc.lock().await.start().unwrap_or(());
+
     tokio::spawn(async move {
-        // Try ffmpeg first, fallback to Rust capture
+        log::info!("Starting ffmpeg pipe...");
         match start_ffmpeg_pipe(writer_arc.clone(), manager_arc.clone()).await {
-            Ok(()) => log::info!("ffmpeg pipe ended"),
-            Err(e) => log::error!("ffmpeg pipe failed: {}, falling back", e),
+            Ok(()) => log::info!("ffmpeg pipe ended normally"),
+            Err(e) => {
+                log::error!("ffmpeg failed ({}), falling back to Rust capture", e);
+                // Fallback: Rust capture loop
+                loop {
+                    {
+                        let mgr = manager_arc.lock().await;
+                        if mgr.role != SessionRole::Target { break; }
+                    }
+                    let mut cap = capture_arc.lock().await;
+                    if let Ok(frame) = cap.capture_frame() {
+                        let mut w = writer_arc.lock().await;
+                        if let Some(ref mut writer) = *w {
+                            let total_len = (1 + 4 + frame.len()) as u32;
+                            let mut hdr = [0u8; 9];
+                            hdr[..4].copy_from_slice(&total_len.to_be_bytes());
+                            hdr[4] = relay_client::MSG_FRAME;
+                            hdr[5..9].copy_from_slice(&(frame.len() as u32).to_be_bytes());
+                            if writer.write_all(&hdr).await.is_err()
+                                || writer.write_all(&frame).await.is_err()
+                            { break; }
+                        }
+                    }
+                    drop(cap);
+                }
+            }
         }
     });
 
@@ -128,7 +157,7 @@ async fn start_ffmpeg_pipe(
     use tokio::io::AsyncReadExt;
 
     // ffmpeg: capture X11 → MJPEG → pipe stdout
-    // -vaapi_device for HW acceleration if available
+    log::info!("Launching ffmpeg x11grab...");
     let mut child = Command::new("ffmpeg")
         .args([
             "-f", "x11grab",
