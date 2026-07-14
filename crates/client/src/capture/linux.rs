@@ -114,7 +114,24 @@ impl CaptureImpl for LinuxCapture {
     }
 
     fn cursor_position(&self) -> Option<CursorPosition> {
-        // TODO: query X11 pointer position
+        #[cfg(feature = "x11-capture")]
+        {
+            use x11rb::connection::Connection;
+            use x11rb::protocol::xproto::ConnectionExt;
+
+            let conn = self.x11_conn.as_ref()?;
+            let conn = conn.lock().ok()?;
+            let screen = &conn.setup().roots[self.x11_screen_num];
+            let root = screen.root;
+
+            let reply = conn.query_pointer(root)?.reply().ok()?;
+            if reply.same_screen {
+                return Some(CursorPosition {
+                    x: reply.root_x as u32,
+                    y: reply.root_y as u32,
+                });
+            }
+        }
         None
     }
 

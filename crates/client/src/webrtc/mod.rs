@@ -36,11 +36,12 @@ use crate::input::InputEngine;
 /// Max chunk size for data channel (must be < 64KB SCTP limit).
 const CHUNK_SIZE: usize = 60_000;
 
-/// JPEG quality: good balance for remote desktop (30-50 = decent).
-const JPEG_QUALITY: u8 = 45;
+/// JPEG quality (1-100). Higher = better quality, larger files.
+/// With chunking (60KB/chunk), we can afford higher quality.
+const JPEG_QUALITY: u8 = 70;
 
-/// Max width before downscaling.
-const MAX_FRAME_WIDTH: u32 = 1280;
+/// Max width before downscaling. Full HD = sharp remote desktop.
+const MAX_FRAME_WIDTH: u32 = 1920;
 
 /// Target frames per second.
 const STREAM_FPS: u32 = 10;
