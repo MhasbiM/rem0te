@@ -16,8 +16,8 @@ rem0te-shared = { path = "../shared" }
 # Async runtime
 tokio.workspace = true
 
-# WebSocket client for signaling
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+# WebSocket client for signaling (rustls = pure Rust TLS, no system deps)
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 
 # WebRTC
