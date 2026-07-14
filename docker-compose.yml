@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  rem0te-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"   # REST API + Admin
+      - "21116:21116" # Signaling (TCP)
+      - "21117:21117" # Relay (TCP)
+      - "21118:21118" # WebSocket signaling
+      - "21119:21119" # Relay (UDP)
+    environment:
+      - RUST_LOG=info
+      - REM0TE_API_PORT=8080
+      - REM0TE_SIGNALING_PORT=21116
+      - REM0TE_RELAY_PORT=21117
+      - REM0TE_WS_PORT=21118
+      - REM0TE_JWT_SECRET=change-me-in-production
+    volumes:
+      - rem0te-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  rem0te-data:

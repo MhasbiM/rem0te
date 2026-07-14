@@ -1,0 +1,27 @@
+[package]
+name = "rem0te-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4"
+actix-ws = "0.3"
+actix-cors = "0.7"
+actix-rt = "2"
+actix-files = "0.6"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = "0.24"
+tungstenite = "0.24"
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+jsonwebtoken = "9"
+bcrypt = "0.16"
+futures-util = "0.3"
+dashmap = "6"
+bytes = "1"
