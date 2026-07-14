@@ -52,25 +52,45 @@ impl LinuxCapture {
         // Try to connect to X11 once and cache the connection
         #[cfg(feature = "x11-capture")]
         let (conn, screen_num, ok) = {
-            let display = find_x11_display();
-            match display {
-                Some(dpy) => {
-                    match RustConnection::connect(Some(&dpy)) {
-                        Ok((conn, sn)) => {
-                            tracing::info!("X11 display '{}' connected — capture ENABLED", dpy);
-                            (Some(Arc::new(Mutex::new(conn))), sn, true)
-                        }
-                        Err(e) => {
-                            tracing::warn!("X11 display '{}' found but connection failed: {e}", dpy);
-                            (None, 0, false)
-                        }
+            let mut ok = false;
+            let mut conn = None;
+            let mut sn = 0;
+
+            // Try $DISPLAY first, then common fallbacks
+            let displays: Vec<String> = {
+                let mut v = Vec::new();
+                if let Ok(d) = std::env::var("DISPLAY") { if !d.is_empty() { v.push(d); } }
+                v.push(":0".into());
+                v.push(":1".into());
+                v.push(":0.0".into());
+                v
+            };
+
+            for dpy in &displays {
+                tracing::info!("trying X11 display '{}'...", dpy);
+                match RustConnection::connect(Some(dpy.as_str())) {
+                    Ok((c, s)) => {
+                        tracing::info!("X11 connected to '{}' — capture ENABLED", dpy);
+                        conn = Some(Arc::new(Mutex::new(c)));
+                        sn = s;
+                        ok = true;
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!("X11 '{}' failed: {e}", dpy);
                     }
                 }
-                None => {
-                    tracing::warn!("No X11 display found ($DISPLAY={:?}).", std::env::var("DISPLAY").ok());
-                    (None, 0, false)
-                }
             }
+
+            if !ok {
+                tracing::error!(
+                    "Cannot connect to any X11 display. Tried: {:?}. \
+                     Check: echo $DISPLAY, or try: export DISPLAY=:0",
+                    displays
+                );
+            }
+
+            (conn, sn, ok)
         };
 
         #[cfg(not(feature = "x11-capture"))]
@@ -206,24 +226,6 @@ fn capture_x11_cached(_cap: &LinuxCapture) -> Result<CapturedFrame> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Find a working X11 display. Tries $DISPLAY, then probes common defaults.
-fn find_x11_display() -> Option<String> {
-    if let Ok(dpy) = std::env::var("DISPLAY") {
-        if !dpy.is_empty() {
-            return Some(dpy);
-        }
-    }
-
-    #[cfg(feature = "x11-capture")]
-    for candidate in &[":0", ":0.0", ":1", ":1.0"] {
-        if x11rb::rust_connection::RustConnection::connect(Some(candidate)).is_ok() {
-            return Some(candidate.to_string());
-        }
-    }
-
-    None
-}
 
 /// Return a blank (black) frame.
 fn blank_frame(w: u32, h: u32) -> Result<CapturedFrame> {
