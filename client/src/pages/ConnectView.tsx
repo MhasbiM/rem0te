@@ -1,13 +1,15 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Monitor,
   Wifi,
-  Search,
   RefreshCw,
   Circle,
   Server,
   Plug,
   Globe,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
 
 interface PeerInfo {
@@ -28,6 +30,7 @@ interface Props {
 }
 
 const DEFAULT_SERVER = 'localhost:21118';
+const CONNECT_TIMEOUT = 15000;
 
 export default function ConnectView({ onConnected }: Props) {
   const [serverAddr, setServerAddr] = useState(() => localStorage.getItem('rem0te_server') || DEFAULT_SERVER);
@@ -38,22 +41,27 @@ export default function ConnectView({ onConnected }: Props) {
   const [wsConnected, setWsConnected] = useState(false);
   const [localPeerId, setLocalPeerId] = useState('');
   const [localHostname, setLocalHostname] = useState('');
+  const wsRef = useRef<WebSocket | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    // Auto-detect local hostname
     setLocalHostname(navigator.platform || 'Unknown');
+    return () => {
+      wsRef.current?.close();
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
   }, []);
 
   // Connect to WebSocket signaling server
   const connectToServer = () => {
     setError('');
+    wsRef.current?.close();
     const ws = new WebSocket(`ws://${serverAddr}`);
+    wsRef.current = ws;
 
     ws.onopen = () => {
       setWsConnected(true);
       localStorage.setItem('rem0te_server', serverAddr);
-
-      // Register
       ws.send(JSON.stringify({
         type: 'Register',
         payload: {
@@ -65,25 +73,16 @@ export default function ConnectView({ onConnected }: Props) {
     };
 
     ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        handleSignalingMessage(msg);
-      } catch (e) {
-        console.error('Invalid message:', e);
-      }
+      try { handleSignalingMessage(JSON.parse(event.data)); }
+      catch { console.error('Invalid signaling message'); }
     };
 
-    ws.onerror = () => {
-      setError('Failed to connect to signaling server');
-      setWsConnected(false);
-    };
+    ws.onerror = () => { setError('Cannot reach signaling server'); setWsConnected(false); };
+    ws.onclose = () => setWsConnected(false);
+  };
 
-    ws.onclose = () => {
-      setWsConnected(false);
-    };
-
-    // Store for later use
-    (window as any).__rem0te_ws = ws;
+  const clearTimeout = () => {
+    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
   };
 
   const handleSignalingMessage = (msg: any) => {
@@ -95,73 +94,73 @@ export default function ConnectView({ onConnected }: Props) {
         setPeers(msg.payload.peers || []);
         break;
       case 'PeerOnline': {
-        const peer = msg.payload.peer;
-        setPeers((prev) => {
-          const filtered = prev.filter((p) => p.peer_id !== peer.peer_id);
-          return [...filtered, { ...peer, online: true }];
-        });
+        const p = msg.payload.peer;
+        setPeers((prev) => [...prev.filter((x) => x.peer_id !== p.peer_id), { ...p, online: true }]);
         break;
       }
       case 'PeerOffline':
-        setPeers((prev) =>
-          prev.map((p) => (p.peer_id === msg.payload.peer_id ? { ...p, online: false } : p))
-        );
+        setPeers((prev) => prev.map((x) => (x.peer_id === msg.payload.peer_id ? { ...x, online: false } : x)));
         break;
       case 'ConnectionResponse':
+        clearTimeout();
         if (msg.payload.accepted) {
-          onConnected({
-            peerId: msg.payload.from_peer,
-            hostname: peers.find((p) => p.peer_id === msg.payload.from_peer)?.hostname || 'Remote',
-            os: peers.find((p) => p.peer_id === msg.payload.from_peer)?.os || 'Unknown',
-          });
+          const peer = peers.find((p) => p.peer_id === msg.payload.from_peer);
+          onConnected({ peerId: msg.payload.from_peer, hostname: peer?.hostname || 'Remote', os: peer?.os || 'Unknown' });
         } else {
           setError('Connection rejected by peer');
+          setConnecting(false);
         }
-        setConnecting(false);
         break;
     }
   };
 
-  const handleConnect = (peerId: string, hostname: string, os: string) => {
-    const ws = (window as any).__rem0te_ws;
-    if (!ws || !wsConnected) {
-      setError('Not connected to server');
-      return;
-    }
-
+  const handleConnect = async (peerId: string, hostname: string, os: string) => {
     setConnecting(true);
     setError('');
-    ws.send(JSON.stringify({
-      type: 'RequestConnection',
-      payload: {
-        from_peer: localPeerId,
-        to_peer: peerId,
-        sdp: null,
-      },
-    }));
+    timeoutRef.current = setTimeout(() => {
+      setConnecting(false);
+      setError('Connection timed out. Is rem0te running on the remote machine?');
+    }, CONNECT_TIMEOUT);
+
+    try {
+      const assignedId = await invoke<string>('connect_to_peer', {
+        serverAddr: serverAddr,
+        peerId: peerId,
+        localPeerId: localPeerId || `peer-${Math.random().toString(36).slice(2, 10)}`,
+      });
+      setLocalPeerId(assignedId);
+      clearTimeout();
+      onConnected({ peerId, hostname, os });
+    } catch (err) {
+      clearTimeout();
+      setConnecting(false);
+      setError(typeof err === 'string' ? err : 'Failed to connect');
+    }
   };
 
-  const handleDirectConnect = (e: FormEvent) => {
+  const handleDirectConnect = async (e: FormEvent) => {
     e.preventDefault();
     if (!connectId.trim()) return;
-    
-    // Find the peer by ID
+
     const peer = peers.find((p) => p.peer_id === connectId.trim());
-    if (peer) {
-      handleConnect(peer.peer_id, peer.hostname, peer.os);
-    } else {
-      // Try direct connection
-      onConnected({
-        peerId: connectId.trim(),
-        hostname: 'Direct Connection',
-        os: 'Unknown',
-      });
+    if (peer && wsConnected && wsRef.current) {
+      setConnecting(true);
+      setError('');
+      timeoutRef.current = setTimeout(() => {
+        setConnecting(false);
+        setError('No response. Ensure rem0te is running on the remote machine.');
+      }, CONNECT_TIMEOUT);
+      wsRef.current.send(JSON.stringify({
+        type: 'RequestConnection',
+        payload: { from_peer: localPeerId, to_peer: peer.peer_id, sdp: null },
+      }));
+      return;
     }
+    await handleConnect(connectId.trim(), connectId.trim(), 'Unknown');
   };
 
   return (
     <div className="max-w-2xl mx-auto p-8 space-y-8">
-      {/* Header */}
       <div className="text-center">
         <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl mb-4">
           <Monitor className="w-8 h-8 text-white" />
@@ -177,9 +176,7 @@ export default function ConnectView({ onConnected }: Props) {
           <h3 className="font-semibold text-white">Signaling Server</h3>
           <span
             className={`ml-auto text-xs px-2 py-1 rounded-full ${
-              wsConnected
-                ? 'bg-green-500/10 text-green-400'
-                : 'bg-dark-700 text-dark-200'
+              wsConnected ? 'bg-green-500/10 text-green-400' : 'bg-dark-700 text-dark-200'
             }`}
           >
             {wsConnected ? 'Connected' : 'Disconnected'}
@@ -202,13 +199,14 @@ export default function ConnectView({ onConnected }: Props) {
           </button>
         </div>
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 text-red-400 px-4 py-2 rounded-lg text-sm">
+          <div className="bg-red-500/10 border border-red-500/30 text-red-400 px-4 py-2 rounded-lg text-sm flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
             {error}
           </div>
         )}
       </div>
 
-      {/* Direct connect */}
+      {/* Direct Connect */}
       <div className="bg-dark-900 border border-dark-700 rounded-xl p-5 space-y-4">
         <div className="flex items-center gap-2">
           <Globe className="w-4 h-4 text-dark-200" />
@@ -219,15 +217,23 @@ export default function ConnectView({ onConnected }: Props) {
             type="text"
             value={connectId}
             onChange={(e) => setConnectId(e.target.value)}
-            placeholder="Enter Peer ID or address..."
+            placeholder="Enter Peer ID or IP:port..."
             className="flex-1 bg-dark-800 border border-dark-700 rounded-lg px-4 py-2.5 text-white placeholder-dark-200 focus:outline-none focus:border-primary-500"
+            disabled={connecting}
           />
           <button
             type="submit"
             disabled={connecting || !connectId.trim()}
             className="flex items-center gap-2 px-4 py-2.5 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 rounded-lg text-sm font-medium text-white transition-colors"
           >
-            {connecting ? 'Connecting...' : 'Connect'}
+            {connecting ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Connecting...
+              </>
+            ) : (
+              'Connect'
+            )}
           </button>
         </form>
       </div>
@@ -241,20 +247,15 @@ export default function ConnectView({ onConnected }: Props) {
               <h3 className="font-semibold text-white">Online Peers</h3>
             </div>
             <button
-              onClick={() => {
-                const ws = (window as any).__rem0te_ws;
-                if (ws) ws.send(JSON.stringify({ type: 'Refresh' }));
-              }}
+              onClick={() => wsRef.current?.send(JSON.stringify({ type: 'Refresh' }))}
               className="p-1.5 text-dark-200 hover:text-white rounded-lg hover:bg-dark-800"
             >
               <RefreshCw className="w-4 h-4" />
             </button>
           </div>
           <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
-            {peers.length === 0 ? (
-              <p className="text-dark-200 text-sm text-center py-4">
-                Waiting for peers to come online...
-              </p>
+            {peers.filter((p) => p.online).length === 0 ? (
+              <p className="text-dark-200 text-sm text-center py-4">Waiting for peers...</p>
             ) : (
               peers
                 .filter((p) => p.online)
