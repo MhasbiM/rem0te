@@ -47,7 +47,38 @@ async fn start_viewing(
     *state.relay_writer.lock().await = writer;
     *state.relay_reader.lock().await = reader;
 
-    // Spawn frame receiver task
+    // MJPEG HTTP server channel
+    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+    
+    // Start MJPEG HTTP server on localhost
+    tokio::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:9876").await {
+            Ok(l) => l,
+            Err(e) => { log::error!("MJPEG bind failed: {}", e); return; }
+        };
+        log::info!("MJPEG stream at http://127.0.0.1:9876/stream");
+        loop {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n").await;
+                loop {
+                    match frame_rx.recv().await {
+                        Some(frame) => {
+                            let hdr = format!("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", frame.len());
+                            if socket.write_all(hdr.as_bytes()).await.is_err() { break; }
+                            if socket.write_all(&frame).await.is_err() { break; }
+                            if socket.write_all(b"\r\n").await.is_err() { break; }
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+    });
+
+    // Notify frontend stream is ready
+    let _ = app.emit("stream-ready", "http://127.0.0.1:9876/stream");
+
+    // Relay reader → frame_tx
     let reader_arc = state.relay_reader.clone();
     let manager_arc = state.connection_manager.clone();
     tokio::spawn(async move {
@@ -61,20 +92,15 @@ async fn start_viewing(
                 let mut len_buf = [0u8; 4];
                 if r.read_exact(&mut len_buf).await.is_err() { break; }
                 let total_len = u32::from_be_bytes(len_buf) as usize;
-                if total_len == 0 || total_len > 10_000_000 { break; } // safety
+                if total_len == 0 || total_len > 10_000_000 { break; }
                 let mut buf = vec![0u8; total_len];
                 if r.read_exact(&mut buf).await.is_err() { break; }
-                if buf.len() < 9 { continue; }
-                let msg_type = buf[0];
-                if msg_type == relay_client::MSG_FRAME {
+                if buf.len() >= 9 && buf[0] == relay_client::MSG_FRAME {
                     let plen = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-                    let payload = &buf[5..(5+plen).min(buf.len())];
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
-                    let _ = app.emit("remote-frame", b64);
+                    let frame = buf[5..(5+plen).min(buf.len())].to_vec();
+                    let _ = frame_tx.try_send(frame); // non-blocking
                 }
-            } else {
-                break;
-            }
+            } else { break; }
         }
     });
 

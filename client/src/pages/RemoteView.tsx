@@ -19,17 +19,23 @@ interface Props {
 export default function RemoteView({ connection, onDisconnect }: Props) {
   const [fullscreen, setFullscreen] = useState(false);
   const [frameData, setFrameData] = useState<string | null>(null);
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [fps, setFps] = useState(0);
   const canvasRef = useRef<HTMLDivElement>(null);
   const frameCountRef = useRef(0);
   const lastFpsTime = useRef(Date.now());
 
   // Listen for incoming frames from Tauri backend
-  useEffect(() => {
-    const unlisten = listen<string>('remote-frame', (event) => {
-      // base64 from Rust → data URL (fast, no Blob overhead)
-      setFrameData(`data:image/jpeg;base64,${event.payload}`);
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
 
+  useEffect(() => {
+    // Listen for stream-ready event from backend
+    const unlisten = listen<string>('stream-ready', (event) => {
+      setStreamUrl(event.payload);
+    });
+
+    // FPS counter: poll image naturalWidth changes
+    const interval = setInterval(() => {
       frameCountRef.current++;
       const now = Date.now();
       if (now - lastFpsTime.current >= 1000) {
@@ -37,9 +43,12 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
         frameCountRef.current = 0;
         lastFpsTime.current = now;
       }
-    });
+    }, 1000);
 
-    return () => { unlisten.then(fn => fn()); };
+    return () => {
+      unlisten.then(fn => fn());
+      clearInterval(interval);
+    };
   }, []);
 
   const handleDisconnect = () => {
@@ -148,12 +157,12 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
         onMouseDown={handleMouseDown}
         onMouseUp={handleMouseUp}
       >
-        {frameData ? (
-          <img src={frameData} alt="Remote" className="max-w-full max-h-full object-contain" />
+        {streamUrl ? (
+          <img src={streamUrl} alt="Remote" className="max-w-full max-h-full object-contain" />
         ) : (
           <div className="text-dark-200 text-center">
             <Monitor className="w-16 h-16 mx-auto mb-3 text-dark-700" />
-            <p>Waiting for frames from {connection.hostname}...</p>
+            <p>Waiting for stream from {connection.hostname}...</p>
           </div>
         )}
       </div>
