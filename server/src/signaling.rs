@@ -41,6 +41,7 @@ pub enum SignalingMessage {
     },
     ConnectionResponse {
         from_peer: String,
+        to_peer: String,
         accepted: bool,
         sdp: Option<String>,
     },
@@ -332,10 +333,10 @@ fn handle_signaling_message(state: &SignalingState, sender_id: &str, msg: Signal
                 let _ = tx.send(error_json);
             }
         }
-        SignalingMessage::ConnectionResponse { ref from_peer, .. } => {
-            // Resolve peer_id -> internal connection ID for from_peer (the original requestor)
+        SignalingMessage::ConnectionResponse { ref to_peer, .. } => {
+            // Route response to the intended recipient (to_peer)
             let target_id = state.peers.iter()
-                .find(|p| p.peer_id == *from_peer && p.online)
+                .find(|p| p.peer_id == *to_peer && p.online)
                 .map(|p| p.id.clone());
 
             let json = serde_json::to_string(&msg).unwrap();

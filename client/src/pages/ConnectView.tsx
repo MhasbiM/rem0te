@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import {
   Monitor,
   Wifi,
@@ -112,11 +111,12 @@ export default function ConnectView({ onConnected }: Props) {
         }
         break;
       case 'RequestConnection':
-        // Auto-accept incoming connection (production: prompt user)
+        // Auto-accept incoming connection, respond back to requestor
         wsRef.current?.send(JSON.stringify({
           type: 'ConnectionResponse',
           payload: {
             from_peer: localPeerId,
+            to_peer: msg.payload.from_peer,
             accepted: true,
             sdp: null,
           },
@@ -130,7 +130,12 @@ export default function ConnectView({ onConnected }: Props) {
     }
   };
 
-  const handleConnect = async (peerId: string, hostname: string, os: string) => {
+  const handleConnect = (peerId: string, hostname: string, os: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      setError('Not connected to signaling server. Click "Connect" first.');
+      return;
+    }
+
     setConnecting(true);
     setError('');
     timeoutRef.current = setTimeout(() => {
@@ -138,20 +143,14 @@ export default function ConnectView({ onConnected }: Props) {
       setError('Connection timed out. Is rem0te running on the remote machine?');
     }, CONNECT_TIMEOUT);
 
-    try {
-      const assignedId = await invoke<string>('connect_to_peer', {
-        serverAddr: serverAddr,
-        peerId: peerId,
-        localPeerId: localPeerId || `peer-${Math.random().toString(36).slice(2, 10)}`,
-      });
-      setLocalPeerId(assignedId);
-      clearTimeout();
-      onConnected({ peerId, hostname, os });
-    } catch (err) {
-      clearTimeout();
-      setConnecting(false);
-      setError(typeof err === 'string' ? err : 'Failed to connect');
-    }
+    wsRef.current.send(JSON.stringify({
+      type: 'RequestConnection',
+      payload: {
+        from_peer: localPeerId,
+        to_peer: peerId,
+        sdp: null,
+      },
+    }));
   };
 
   const handleDirectConnect = async (e: FormEvent) => {
@@ -172,7 +171,7 @@ export default function ConnectView({ onConnected }: Props) {
       }));
       return;
     }
-    await handleConnect(connectId.trim(), connectId.trim(), 'Unknown');
+    handleConnect(connectId.trim(), connectId.trim(), 'Unknown');
   };
 
   return (
