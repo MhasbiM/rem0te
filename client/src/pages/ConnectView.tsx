@@ -72,8 +72,11 @@ export default function ConnectView({ onConnected }: Props) {
     };
 
     ws.onmessage = (event) => {
-      try { handleSignalingMessage(JSON.parse(event.data)); }
-      catch { console.error('Invalid signaling message'); }
+      try {
+        const msg = JSON.parse(event.data);
+        console.log('[rem0te] WS recv:', msg.type, msg.payload);
+        handleSignalingMessage(msg);
+      } catch { console.error('[rem0te] Invalid signaling message'); }
     };
 
     ws.onerror = () => { setError('Cannot reach signaling server'); setWsConnected(false); };
@@ -151,6 +154,7 @@ export default function ConnectView({ onConnected }: Props) {
         sdp: null,
       },
     }));
+    console.log('[rem0te] WS send: RequestConnection to', peerId);
   };
 
   const handleDirectConnect = async (e: FormEvent) => {

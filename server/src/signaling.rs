@@ -253,7 +253,10 @@ pub async fn run_ws_server(state: Arc<SignalingState>, port: u16) -> anyhow::Res
                     while let Some(Ok(msg)) = ws_receiver.next().await {
                         if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
                             if let Ok(sig_msg) = serde_json::from_str::<SignalingMessage>(&text) {
+                                log::info!("WS recv from {}: {:?}", peer_id, sig_msg);
                                 handle_signaling_message(&state, &peer_id, sig_msg);
+                            } else {
+                                log::warn!("WS parse fail from {}: {}", peer_id, &text[..text.len().min(200)]);
                             }
                         }
                     }
@@ -314,9 +317,12 @@ fn handle_signaling_message(state: &SignalingState, sender_id: &str, msg: Signal
                 .find(|p| p.peer_id == *to_peer && p.online)
                 .map(|p| p.id.clone());
 
+            log::info!("RequestConnection: to_peer={}, resolved={:?}", to_peer, target_id);
+
             let json = serde_json::to_string(&msg).unwrap();
             if let Some(ref id) = target_id {
                 if let Some(target) = state.ws_connections.get(id) {
+                    log::info!("Forwarding to WS {}", id);
                     let _ = target.send(json);
                     return;
                 } else if let Some(target) = state.tcp_connections.get(id) {
