@@ -42,6 +42,7 @@ export default function ConnectView({ onConnected }: Props) {
   const [localHostname, setLocalHostname] = useState('');
   const wsRef = useRef<WebSocket | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const peerIdRef = useRef<string>('');
 
   useEffect(() => {
     setLocalHostname(navigator.platform || 'Unknown');
@@ -61,10 +62,14 @@ export default function ConnectView({ onConnected }: Props) {
     ws.onopen = () => {
       setWsConnected(true);
       localStorage.setItem('rem0te_server', serverAddr);
+      // Generate stable peer_id if not set yet
+      const myPeerId = localPeerId || `peer-${Math.random().toString(36).slice(2, 10)}`;
+      setLocalPeerId(myPeerId);
+      peerIdRef.current = myPeerId;
       ws.send(JSON.stringify({
         type: 'Register',
         payload: {
-          peer_id: localPeerId || `peer-${Math.random().toString(36).slice(2, 10)}`,
+          peer_id: myPeerId,
           os: navigator.platform,
           hostname: localHostname || 'Unknown',
         },
@@ -90,7 +95,7 @@ export default function ConnectView({ onConnected }: Props) {
   const handleSignalingMessage = (msg: any) => {
     switch (msg.type) {
       case 'Registered':
-        setLocalPeerId(msg.payload.assigned_id);
+        console.log('[rem0te] Registered, our peer_id:', peerIdRef.current);
         break;
       case 'PeerList':
         setPeers(msg.payload.peers || []);
@@ -114,11 +119,11 @@ export default function ConnectView({ onConnected }: Props) {
         }
         break;
       case 'RequestConnection':
-        // Auto-accept incoming connection, respond back to requestor
+        console.log('[rem0te] Incoming connection from', msg.payload.from_peer);
         wsRef.current?.send(JSON.stringify({
           type: 'ConnectionResponse',
           payload: {
-            from_peer: localPeerId,
+            from_peer: peerIdRef.current,
             to_peer: msg.payload.from_peer,
             accepted: true,
             sdp: null,
@@ -149,7 +154,7 @@ export default function ConnectView({ onConnected }: Props) {
     wsRef.current.send(JSON.stringify({
       type: 'RequestConnection',
       payload: {
-        from_peer: localPeerId,
+        from_peer: peerIdRef.current,
         to_peer: peerId,
         sdp: null,
       },
@@ -171,7 +176,7 @@ export default function ConnectView({ onConnected }: Props) {
       }, CONNECT_TIMEOUT);
       wsRef.current.send(JSON.stringify({
         type: 'RequestConnection',
-        payload: { from_peer: localPeerId, to_peer: peer.peer_id, sdp: null },
+        payload: { from_peer: peerIdRef.current, to_peer: peer.peer_id, sdp: null },
       }));
       return;
     }
