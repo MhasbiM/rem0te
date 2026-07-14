@@ -9,7 +9,6 @@ mod relay_client;
 use base64::Engine;
 use capture::ScreenCapture;
 use connection::{ConnectionManager, SessionRole};
-use relay_client::RelayClient;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -43,12 +42,12 @@ async fn start_viewing(
             if mgr.role != SessionRole::Viewer || !mgr.relay.is_connected() {
                 break;
             }
-            match mgr.relay.recv_typed().await {
-                Ok((RelayClient::MSG_FRAME, data)) => {
+            match mgr.relay.recv_mut().await {
+                Ok((relay_client::MSG_FRAME, data)) => {
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                     let _ = app.emit("remote-frame", b64);
                 }
-                Ok((RelayClient::MSG_INPUT, _data)) => {
+                Ok((relay_client::MSG_INPUT, _data)) => {
                     // Input events from target not needed on viewer side
                 }
                 Ok(_) => {} // unknown message type
@@ -96,7 +95,10 @@ async fn start_serving(
             let mut cap = capture_arc.lock().await;
             match cap.capture_frame() {
                 Ok(frame) => {
-                    let _ = mgr.relay.send(RelayClient::MSG_FRAME, &frame).await;
+                    if mgr.relay.send_mut(relay_client::MSG_FRAME, &frame).await.is_err() {
+                        log::info!("Relay send failed, stopping capture");
+                        break;
+                    }
                 }
                 Err(e) => {
                     log::error!("Capture error: {}", e);
@@ -109,26 +111,25 @@ async fn start_serving(
         }
     });
 
-    // Spawn input receiver loop (Target receives inputs from Viewer)
+    // Input receiver: non-blocking poll (100ms interval, try_lock, 1ms timeout)
     let manager_arc2 = state.connection_manager.clone();
     tokio::spawn(async move {
         loop {
-            let mut mgr = manager_arc2.lock().await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let mut mgr = match manager_arc2.try_lock() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
             if mgr.role != SessionRole::Target || !mgr.relay.is_connected() {
                 break;
             }
-            match mgr.relay.recv_typed().await {
-                Ok((RelayClient::MSG_INPUT, data)) => {
-                    if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&data) {
-                        #[cfg(target_os = "linux")]
-                        simulate_input(&event);
-                        #[cfg(not(target_os = "linux"))]
-                        let _ = event;
-                    }
-                }
-                Ok(_) => {} // skip frames or unknown on target receive
-                Err(_) => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            if let Ok(Ok((relay_client::MSG_INPUT, data))) = tokio::time::timeout(
+                tokio::time::Duration::from_millis(1),
+                mgr.relay.recv_mut(),
+            ).await {
+                if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&data) {
+                    #[cfg(target_os = "linux")]
+                    simulate_input(&event);
                 }
             }
         }
@@ -165,7 +166,7 @@ async fn send_input_event(
         "button": button,
     });
     let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
-    manager.relay.send(RelayClient::MSG_INPUT, &bytes).await.map_err(|e| e.to_string())
+    manager.relay.send_mut(relay_client::MSG_INPUT, &bytes).await.map_err(|e| e.to_string())
 }
 
 /// Simulate keyboard/mouse input on target using xdotool CLI

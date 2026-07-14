@@ -41,6 +41,8 @@ export default function ConnectView({ onConnected }: Props) {
   const [wsConnected, setWsConnected] = useState(false);
   const [localPeerId, setLocalPeerId] = useState('');
   const [localHostname, setLocalHostname] = useState('');
+  const [isServing, setIsServing] = useState(false);
+  const [viewedBy, setViewedBy] = useState('');
   const wsRef = useRef<WebSocket | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const peerIdRef = useRef<string>('');
@@ -162,11 +164,17 @@ export default function ConnectView({ onConnected }: Props) {
       case 'RelayInfo':
         // Target (Linux): join relay session and start capturing
         console.log('[rem0te] Joining relay session:', msg.payload.session_id);
+        setIsServing(true);
+        setViewedBy(msg.payload.to_peer ? peers.find(p => p.peer_id === msg.payload.to_peer)?.hostname || msg.payload.to_peer : 'viewer');
         invoke('start_serving', {
           serverAddr: serverAddr,
           sessionId: msg.payload.session_id,
           viewerPeer: msg.payload.from_peer || 'viewer',
         }).catch((err) => console.error('[rem0te] start_serving failed:', err));
+        break;
+      case 'SessionEnd':
+        console.log('[rem0te] Session ended by peer');
+        stopServing();
         break;
       case 'Error':
         cancelTimer();
@@ -221,6 +229,12 @@ export default function ConnectView({ onConnected }: Props) {
     handleConnect(connectId.trim(), connectId.trim(), 'Unknown');
   };
 
+  const stopServing = () => {
+    invoke('disconnect_session').catch(() => {});
+    setIsServing(false);
+    setViewedBy('');
+  };
+
   return (
     <div className="max-w-2xl mx-auto p-8 space-y-8">
       <div className="text-center">
@@ -230,6 +244,22 @@ export default function ConnectView({ onConnected }: Props) {
         <h2 className="text-2xl font-bold text-white">rem0te Desktop</h2>
         <p className="text-dark-200 mt-2">Connect to remote machines securely</p>
       </div>
+
+      {/* Stop Sharing banner */}
+      {isServing && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-5 flex items-center justify-between">
+          <div>
+            <p className="text-red-400 font-semibold">Screen is being shared</p>
+            <p className="text-dark-200 text-sm">Being viewed by {viewedBy || 'remote peer'}</p>
+          </div>
+          <button
+            onClick={stopServing}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium text-white transition-colors"
+          >
+            Stop Sharing
+          </button>
+        </div>
+      )}
 
       {/* Server connection */}
       <div className="bg-dark-900 border border-dark-700 rounded-xl p-5 space-y-4">
