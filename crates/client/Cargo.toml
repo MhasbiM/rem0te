@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# Enable on real Linux for PipeWire/GStreamer capture + evdev input.
+# Requires: libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libglib2.0-dev
+linux-media = ["gstreamer", "gstreamer-app", "gstreamer-video", "ashpd", "evdev"]
+
 [dependencies]
 rem0te-shared = { path = "../shared" }
 
@@ -47,16 +53,13 @@ bytes = "1"
 # ---------------------------------------------------------------------------
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# PipeWire screen capture (via GStreamer or direct)
-gstreamer = "0.23"
-gstreamer-app = "0.23"
-gstreamer-video = "0.23"
-
-# xdg-desktop-portal for screen capture permission
-ashpd = { version = "0.10", features = ["tokio", "pipewire"] }
-
-# Input on Linux
-evdev = "0.12"
+# All Linux deps are optional — enable with: cargo build --features linux-media
+# Install system libs first: sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libglib2.0-dev pkg-config
+gstreamer = { version = "0.23", optional = true }
+gstreamer-app = { version = "0.23", optional = true }
+gstreamer-video = { version = "0.23", optional = true }
+ashpd = { version = "0.10", features = ["tokio", "pipewire"], optional = true }
+evdev = { version = "0.12", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreGraphics for screen capture & input
