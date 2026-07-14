@@ -1,22 +1,21 @@
 //! WebRTC peer connection manager for the remote agent.
 //!
 //! Handles:
-//! - Creating a peer connection
-//! - Capturing frames, encoding to JPEG, and sending via data channel
+//! - Creating a peer connection with an AV1 video track (proper WebRTC video)
+//! - Capturing frames, BGRA→I420 conversion, AV1 encoding via rav1e
+//! - Sending encoded AV1 frames through `TrackLocalStaticSample`
 //! - Receiving input events via data channel
 //! - Exchanging SDP offers/answers via signaling
 //!
 //! ## Video approach
-//! Raw frames are encoded to JPEG and sent over a "video" data channel.
-//! The frontend renders them as `<img>` elements. This avoids the complexity
-//! of real-time video encoding (VP8/H.264) while still delivering a
-//! functional remote desktop stream.
-//!
-//! Future: replace JPEG with hardware-accelerated H.264 via VideoToolbox
-//! (macOS) or VAAPI (Linux) piped through a proper WebRTC video track.
+//! Raw frames are converted to I420 (YUV), encoded with rav1e (AV1, pure Rust),
+//! and sent through a proper WebRTC video track. The browser decodes AV1 natively
+//! via the `<video>` element's `srcObject`. This replaces the previous JPEG-over-
+//! data-channel approach, enabling temporal compression (P-frames) and much
+//! higher framerate.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
@@ -27,17 +26,15 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::media::Sample;
 
 use rem0te_shared::SignalingMessage;
 
 use crate::capture::CaptureEngine;
 use crate::input::InputEngine;
-
-/// Max chunk size for data channel (must be < 64KB SCTP limit).
-const CHUNK_SIZE: usize = 60_000;
-
-/// Quality: Full HD, good quality.
-const JPEG_QUALITY: u8 = 68;
+use crate::video::{self, Av1Encoder};
 
 /// Max width: Full HD.
 const MAX_FRAME_WIDTH: u32 = 1920;
@@ -45,11 +42,14 @@ const MAX_FRAME_WIDTH: u32 = 1920;
 /// Target FPS.
 const STREAM_FPS: u32 = 25;
 
+/// Target bitrate in kbps.
+const BITRATE_KBPS: u32 = 2000;
+
 /// Manages a WebRTC session for one remote viewer.
 pub struct WebRtcManager {
     peer_connection: Option<Arc<RTCPeerConnection>>,
-    /// Data channel for sending JPEG video frames.
-    video_dc: Option<Arc<RTCDataChannel>>,
+    /// AV1 video track for sending encoded frames.
+    video_track: Option<Arc<TrackLocalStaticSample>>,
     capture: &'static CaptureEngine,
     input: &'static InputEngine,
     /// Sender to push signaling messages back to the WebSocket.
@@ -58,9 +58,6 @@ pub struct WebRtcManager {
     machine_id: String,
 }
 
-// Safety: CaptureEngine and InputEngine are thread-safe (they use platform
-// APIs that are internally synchronized).
-// Actually, this is a simplified approach. In production, use Arc.
 impl WebRtcManager {
     pub async fn new(
         capture: &CaptureEngine,
@@ -68,12 +65,15 @@ impl WebRtcManager {
         signaling_tx: mpsc::UnboundedSender<SignalingMessage>,
         machine_id: String,
     ) -> Result<Self> {
+        // Safety: CaptureEngine and InputEngine are thread-safe (platform APIs
+        // use internal synchronization). This transmute lets us share them with
+        // spawned tasks without Arc overhead.
         let capture_ref: &'static CaptureEngine = unsafe { std::mem::transmute(capture) };
         let input_ref: &'static InputEngine = unsafe { std::mem::transmute(input) };
 
         Ok(Self {
             peer_connection: None,
-            video_dc: None,
+            video_track: None,
             capture: capture_ref,
             input: input_ref,
             signaling_tx,
@@ -105,22 +105,44 @@ impl WebRtcManager {
 
         // ── Create peer connection ────────────────────────────────
         let peer_connection = api.new_peer_connection(config).await?;
+        let pc = Arc::new(peer_connection);
 
-        // ── Data channel for video frames (JPEG) ──────────────────
-        // Agent creates "video" channel → web client receives via ondatachannel
-        let video_dc = peer_connection
-            .create_data_channel("video", None)
-            .await?;
-        self.video_dc = Some(video_dc);
+        // ── AV1 Video Track ──────────────────────────────────────
+        // Create a local video track that we'll write encoded AV1 samples to.
+        let video_track = Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability {
+                mime_type: webrtc::api::media_engine::MIME_TYPE_AV1.to_owned(),
+                clock_rate: 90_000, // 90 kHz for video
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                rtcp_feedback: vec![],
+            },
+            "video".to_owned(),
+            "rem0te".to_owned(),
+        ));
 
-        // ── Handle incoming "input" channel from web client ────────
-        // Web client creates "input" channel → agent receives via on_data_channel
+        // Add the track to the peer connection
+        let rtp_sender = pc.add_track(video_track.clone()).await?;
+
+        // Spawn a task to read RTCP packets (required by webrtc-rs, otherwise
+        // the internal buffer fills up and blocks the connection).
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 1500];
+            while let Ok((packets, _attrs)) = rtp_sender.read(&mut buf).await {
+                debug!("RTCP: {} packets", packets.len());
+            }
+            debug!("RTCP reader stopped");
+        });
+
+        self.video_track = Some(video_track);
+
+        // ── Handle incoming "input" data channel from web client ──
         let input_engine_ref: &'static InputEngine = self.input;
-        peer_connection.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+        pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let input = input_engine_ref;
             Box::pin(async move {
                 if dc.label() == "input" {
-                    tracing::info!("incoming 'input' data channel — keyboard/mouse enabled");
+                    info!("incoming 'input' data channel — keyboard/mouse enabled");
                     dc.on_message(Box::new(move |msg| {
                         let inp = input;
                         Box::pin(handle_input_message(msg, inp))
@@ -132,7 +154,7 @@ impl WebRtcManager {
         // ── ICE candidate callback ────────────────────────────────
         let signaling = self.signaling_tx.clone();
         let mid = self.machine_id.clone();
-        peer_connection.on_ice_candidate(Box::new(
+        pc.on_ice_candidate(Box::new(
             move |candidate: Option<webrtc::ice_transport::ice_candidate::RTCIceCandidate>| {
                 let tx = signaling.clone();
                 let machine_id = mid.clone();
@@ -152,9 +174,16 @@ impl WebRtcManager {
             },
         ));
 
-        self.peer_connection = Some(Arc::new(peer_connection));
+        // ── Connection state change logging ──────────────────────
+        pc.on_peer_connection_state_change(Box::new(move |state| {
+            Box::pin(async move {
+                info!("peer connection state: {state}");
+            })
+        }));
 
-        info!(session_id = %session_id, "WebRTC session ready");
+        self.peer_connection = Some(pc);
+
+        info!(session_id = %session_id, "WebRTC session ready (AV1 video track)");
         Ok(())
     }
 
@@ -172,14 +201,15 @@ impl WebRtcManager {
             )?;
         pc.set_remote_description(offer).await?;
 
-        // Create answer
+        // Create answer — video track was already added in start_session(),
+        // so it will be included in the answer SDP automatically.
         let answer = pc.create_answer(None).await?;
         let answer_sdp = answer.sdp.clone();
         pc.set_local_description(answer).await?;
 
-        info!("SDP answer created — starting video stream");
+        info!("SDP answer created with AV1 video track — starting stream");
 
-        // Start streaming JPEG frames (spawns background task)
+        // Start the capture → encode → write_sample loop
         self.start_streaming();
 
         Ok(answer_sdp)
@@ -210,12 +240,12 @@ impl WebRtcManager {
         Ok(())
     }
 
-    /// Start capturing, encoding, chunking, and sending frames.
+    /// Start the capture → encode → video track streaming loop.
     fn start_streaming(&self) {
-        let video_dc = match self.video_dc.clone() {
-            Some(dc) => dc,
+        let video_track = match self.video_track.clone() {
+            Some(t) => t,
             None => {
-                error!("no video data channel");
+                error!("no video track to stream to");
                 return;
             }
         };
@@ -224,38 +254,80 @@ impl WebRtcManager {
         let frame_duration = Duration::from_secs_f64(1.0 / STREAM_FPS as f64);
 
         tokio::spawn(async move {
-            let mut frame_id: u32 = 0;
+            let (display_w, display_h) = capture.display_dimensions();
+
+            // Determine output size (downscale if wider than MAX_FRAME_WIDTH)
+            let (enc_w, enc_h) = if display_w > MAX_FRAME_WIDTH {
+                let ratio = MAX_FRAME_WIDTH as f64 / display_w as f64;
+                (MAX_FRAME_WIDTH, (display_h as f64 * ratio) as u32)
+            } else {
+                (display_w, display_h)
+            };
+
+            // Ensure even dimensions for chroma subsampling
+            let enc_w = enc_w.saturating_sub(enc_w % 2);
+            let enc_h = enc_h.saturating_sub(enc_h % 2);
+
+            // Create AV1 encoder
+            let mut encoder = match Av1Encoder::new(enc_w, enc_h, STREAM_FPS, BITRATE_KBPS) {
+                Ok(e) => e,
+                Err(e) => {
+                    error!("failed to create AV1 encoder: {e}");
+                    return;
+                }
+            };
+
             let mut last_report = tokio::time::Instant::now();
             let mut frames_since_report = 0u32;
-            info!("video streaming (chunked JPEG, {}fps, q{})", STREAM_FPS, JPEG_QUALITY);
+            let mut last_rtp_ts: u32 = 0;
+            let rtp_ts_step = 90_000 / STREAM_FPS; // 90kHz clock / FPS
+
+            info!(
+                "AV1 video streaming: {}×{} @ {}fps, {}kbps",
+                enc_w, enc_h, STREAM_FPS, BITRATE_KBPS
+            );
 
             loop {
                 let start = tokio::time::Instant::now();
 
-                match capture_frame_jpeg(capture) {
-                    Ok(jpeg_bytes) => {
-                        frame_id = frame_id.wrapping_add(1);
-                        let chunks = split_into_chunks(frame_id, &jpeg_bytes);
+                match capture_frame_and_encode(capture, &mut encoder) {
+                    Ok(Some(encoded)) => {
+                        last_rtp_ts = last_rtp_ts.wrapping_add(rtp_ts_step);
+                        let encoded_len = encoded.data.len();
+                        let encoded_kind = encoded.kind;
 
-                        // Fire-and-forget: don't block on send
-                        for chunk in chunks {
-                            let dc = video_dc.clone();
-                            tokio::spawn(async move {
-                                let _ = dc.send(&bytes::Bytes::from(chunk)).await;
-                            });
+                        let sample = Sample {
+                            data: bytes::Bytes::from(encoded.data),
+                            timestamp: SystemTime::now(),
+                            duration: frame_duration,
+                            packet_timestamp: last_rtp_ts,
+                            prev_dropped_packets: 0,
+                            prev_padding_packets: 0,
+                        };
+
+                        if let Err(e) = video_track.write_sample(&sample).await {
+                            error!("write_sample error: {e}");
                         }
 
                         frames_since_report += 1;
                         let elapsed = last_report.elapsed();
                         if elapsed.as_secs() >= 3 {
                             let fps = frames_since_report as f64 / elapsed.as_secs_f64();
-                            info!("video actual FPS: {:.1}", fps);
+                            info!(
+                                "video: {:.1} FPS, {} bytes/frame, {:?} encode",
+                                fps,
+                                encoded_len,
+                                encoded_kind
+                            );
                             last_report = tokio::time::Instant::now();
                             frames_since_report = 0;
                         }
                     }
+                    Ok(None) => {
+                        // Encoder deferred output (normal during lookahead buildup)
+                    }
                     Err(e) => {
-                        error!("frame error: {e}");
+                        error!("capture/encode error: {e}");
                     }
                 }
 
@@ -274,119 +346,129 @@ impl WebRtcManager {
                 error!("error closing peer connection: {e}");
             }
         }
-        self.video_dc = None;
+        self.video_track = None;
         info!("WebRTC session closed");
         Ok(())
     }
 }
 
 // ---------------------------------------------------------------------------
-// Frame encoding + cursor
+// Capture + Encode Pipeline
 // ---------------------------------------------------------------------------
 
-/// Capture a frame, draw cursor, downscale, encode to JPEG.
-fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
+/// Encoded frame with metadata.
+struct EncodedFrameData {
+    data: Vec<u8>,
+    kind: FrameKind,
+}
+
+enum FrameKind {
+    Key,
+    Delta,
+}
+
+impl std::fmt::Debug for FrameKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FrameKind::Key => write!(f, "KEY"),
+            FrameKind::Delta => write!(f, "Δ"),
+        }
+    }
+}
+
+/// Capture one frame, convert to I420, encode with AV1.
+fn capture_frame_and_encode(
+    capture: &CaptureEngine,
+    encoder: &mut Av1Encoder,
+) -> Result<Option<EncodedFrameData>> {
     let frame = capture.capture_frame()?;
 
-    // Determine output size
-    let (out_w, out_h) = if frame.width > MAX_FRAME_WIDTH {
+    // BGRA → I420 planes
+    let (y, u, v) = video::bgra_to_i420_planes(&frame.data, frame.width, frame.height);
+
+    // Downscale I420 if needed
+    let (y, u, v) = if frame.width > MAX_FRAME_WIDTH {
         let ratio = MAX_FRAME_WIDTH as f64 / frame.width as f64;
-        (MAX_FRAME_WIDTH, (frame.height as f64 * ratio) as u32)
+        let new_w = MAX_FRAME_WIDTH;
+        let new_h = (frame.height as f64 * ratio) as u32;
+        let new_w = new_w.saturating_sub(new_w % 2);
+        let new_h = new_h.saturating_sub(new_h % 2);
+        downscale_i420(&y, &u, &v, frame.width, frame.height, new_w, new_h)
     } else {
-        (frame.width, frame.height)
+        let fw = frame.width.saturating_sub(frame.width % 2);
+        let fh = frame.height.saturating_sub(frame.height % 2);
+        // Truncate to even dimensions if needed (encoder requirement)
+        if fw != frame.width || fh != frame.height {
+            downscale_i420(&y, &u, &v, frame.width, frame.height, fw, fh)
+        } else {
+            (y, u, v)
+        }
     };
 
-    // BGRA → RGB (drop alpha, swap R/B)
-    let pixel_count = (frame.width * frame.height) as usize;
-    let mut rgb = Vec::with_capacity(pixel_count * 3);
-    for chunk in frame.data.chunks_exact(4) {
-        rgb.push(chunk[2]); // R
-        rgb.push(chunk[1]); // G
-        rgb.push(chunk[0]); // B
+    // Encode with AV1
+    match encoder.encode(&y, &u, &v) {
+        Ok(Some(encoded)) => {
+            let kind = if encoded.keyframe { FrameKind::Key } else { FrameKind::Delta };
+            Ok(Some(EncodedFrameData {
+                data: encoded.data,
+                kind,
+            }))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(e),
     }
+}
 
-    // Cursor is rendered by frontend (CSS overlay), not drawn on frame.
-    // This avoids JPEG artifacts on the cursor and keeps it sharp.
+/// Simple nearest-neighbor downscale for I420 planes.
+fn downscale_i420(
+    y: &[u8], u: &[u8], v: &[u8],
+    src_w: u32, src_h: u32,
+    dst_w: u32, dst_h: u32,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let src_w = src_w as usize;
+    let src_h = src_h as usize;
+    let dst_w = dst_w as usize;
+    let dst_h = dst_h as usize;
 
-    let src_img = image::RgbImage::from_raw(frame.width, frame.height, rgb)
-        .context("failed to create source image")?;
+    let mut dy = vec![0u8; dst_w * dst_h];
+    let mut du = vec![0u8; (dst_w / 2) * (dst_h / 2)];
+    let mut dv = vec![0u8; (dst_w / 2) * (dst_h / 2)];
 
-    // Downscale
-    let img = if out_w != frame.width {
-        image::imageops::resize(&src_img, out_w, out_h, image::imageops::FilterType::Nearest)
-    } else {
-        src_img
-    };
-
-    // Fast JPEG: use system cjpeg (libjpeg-turbo SIMD) if available, fallback to image crate
-    let mut jpeg_bytes = Vec::new();
-    match encode_jpeg_fast(&img, out_w, out_h) {
-        Ok(bytes) => jpeg_bytes = bytes,
-        Err(_) => {
-            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, JPEG_QUALITY);
-            encoder.encode(&img, out_w, out_h, image::ColorType::Rgb8.into())?;
+    // Downscale Y
+    for row in 0..dst_h {
+        let src_row = (row * src_h) / dst_h;
+        for col in 0..dst_w {
+            let src_col = (col * src_w) / dst_w;
+            dy[row * dst_w + col] = y[src_row * src_w + src_col];
         }
     }
 
-    debug!("frame {}x{}→{}x{} JPEG {} bytes", frame.width, frame.height, out_w, out_h, jpeg_bytes.len());
-    Ok(jpeg_bytes)
-}
-
-/// Fast JPEG encode using system `cjpeg` (libjpeg-turbo) via PPM pipe.
-/// Falls back to `image` crate encoder if cjpeg not available.
-fn encode_jpeg_fast(img: &image::RgbImage, w: u32, h: u32) -> Result<Vec<u8>> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new("cjpeg")
-        .args(["-quality", &JPEG_QUALITY.to_string(), "-outfile", "/dev/stdout"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("cjpeg not found — install: sudo apt install libjpeg-turbo-progs")?;
-
-    let mut stdin = child.stdin.take().unwrap();
-    write!(stdin, "P6\n{} {}\n255\n", w, h)?;
-    stdin.write_all(img.as_raw())?;
-    drop(stdin);
-
-    let output = child.wait_with_output()?;
-    Ok(output.stdout)
-}
-
-// ---------------------------------------------------------------------------
-// Frame chunking
-// ---------------------------------------------------------------------------
-
-/// Split JPEG bytes into chunks with header.
-///
-/// Each chunk: [frame_id: u32 BE][chunk_idx: u16 BE][total: u16 BE][payload]
-fn split_into_chunks(frame_id: u32, data: &[u8]) -> Vec<Vec<u8>> {
-    let total = ((data.len() + CHUNK_SIZE - 1) / CHUNK_SIZE) as u16;
-    let mut chunks = Vec::with_capacity(total as usize);
-
-    for (i, chunk_data) in data.chunks(CHUNK_SIZE).enumerate() {
-        let mut chunk = Vec::with_capacity(8 + chunk_data.len());
-        chunk.extend_from_slice(&frame_id.to_be_bytes());
-        chunk.extend_from_slice(&(i as u16).to_be_bytes());
-        chunk.extend_from_slice(&total.to_be_bytes());
-        chunk.extend_from_slice(chunk_data);
-        chunks.push(chunk);
+    // Downscale U and V (half resolution)
+    let suw = src_w / 2;
+    let suh = src_h / 2;
+    let duw = dst_w / 2;
+    let duh = dst_h / 2;
+    for row in 0..duh {
+        let src_row = (row * suh) / duh;
+        for col in 0..duw {
+            let src_col = (col * suw) / duw;
+            du[row * duw + col] = u[src_row * suw + src_col];
+            dv[row * duw + col] = v[src_row * suw + src_col];
+        }
     }
 
-    chunks
+    (dy, du, dv)
 }
 
 // ---------------------------------------------------------------------------
-// Data channel handlers
+// Data channel: input events from web client
 // ---------------------------------------------------------------------------
 
 /// Handle incoming messages on the "input" data channel.
 async fn handle_input_message(msg: DataChannelMessage, input: &InputEngine) {
     if msg.is_string {
         if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
-            tracing::info!("input received: {}", &text[..text.len().min(80)]);
+            tracing::debug!("input received: {}", &text[..text.len().min(80)]);
             if let Ok(event) = serde_json::from_str::<SignalingMessage>(&text) {
                 match event {
                     SignalingMessage::KeyEvent {
@@ -406,7 +488,7 @@ async fn handle_input_message(msg: DataChannelMessage, input: &InputEngine) {
                         let _ = input.send_mouse_scroll(dx, dy).await;
                     }
                     _ => {
-                        debug!("unhandled input message: {text}");
+                        debug!("unhandled input message variant");
                     }
                 }
             }

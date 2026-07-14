@@ -3,7 +3,7 @@ import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import type { MachineInfo, MachineId, SignalingMessage } from '@/types/protocol'
 
 const props = defineProps<{
-  currentFrameUrl: string | null
+  remoteStream: MediaStream | null
   connected: boolean
   machines: MachineInfo[]
   currentMachine: MachineId | null
@@ -199,13 +199,16 @@ onUnmounted(() => {
         <p>Connecting to remote machine...</p>
       </div>
 
-      <!-- Video element -->
-      <img
-        v-if="connected && currentFrameUrl"
-        :src="currentFrameUrl"
+      <!-- Video element (native WebRTC, AV1 decoded by browser) -->
+      <video
+        v-if="connected && remoteStream"
+        ref="videoRef"
+        :srcObject="remoteStream"
         class="screen-video"
-        alt="Remote desktop"
-      />
+        autoplay
+        playsinline
+        muted
+      ></video>
 
       <!-- Cursor overlay -->
       <div

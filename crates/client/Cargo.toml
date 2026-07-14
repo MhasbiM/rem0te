@@ -49,6 +49,11 @@ hostname = "0.4"
 image = "0.25"
 bytes = "1"
 
+# AV1 video encoding (pure Rust, no system deps)
+# Already used internally by webrtc, but we need it as direct dep for encoding
+rav1e = "0.8"
+v_frame = "0.3"
+
 # ---------------------------------------------------------------------------
 # Platform-specific dependencies
 # ---------------------------------------------------------------------------

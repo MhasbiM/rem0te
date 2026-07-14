@@ -15,6 +15,7 @@ mod capture;
 mod input;
 mod signaling;
 mod webrtc;
+mod video;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;

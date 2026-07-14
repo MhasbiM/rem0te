@@ -91,7 +91,7 @@ onMounted(() => {
       <!-- Remote Screen -->
       <RemoteScreen
         v-if="signaling.connected.value && !showConnectionDialog"
-        :current-frame-url="webrtc.currentFrameUrl.value"
+        :remote-stream="webrtc.remoteStream.value"
         :connected="webrtc.connected.value"
         :machines="signaling.machines.value"
         :current-machine="signaling.currentMachine.value"
