@@ -190,17 +190,22 @@ fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
     // Size: 32bpp for ZPixmap
     let size = (w as usize) * (h as usize) * 4;
 
-    // Lazy-init SHM
+    // Lazy-init SHM, fallback to regular GetImage
     let mut shm_guard = cap.shm.lock().unwrap();
     if shm_guard.is_none() {
-        *shm_guard = Some(create_shm(&conn, size)?);
-        tracing::info!("X11 SHM ready: {} bytes", size);
+        match create_shm(&conn, size) {
+            Ok(s) => { tracing::info!("X11 SHM ready: {} bytes", size); *shm_guard = Some(s); }
+            Err(e) => { tracing::warn!("SHM failed ({e}), using regular GetImage"); }
+        }
     }
-    let shm = shm_guard.as_ref().unwrap();
 
     let t0 = std::time::Instant::now();
-    conn.shm_get_image(root, 0, 0, geo.width, geo.height, u32::MAX, ImageFormat::Z_PIXMAP.into(), shm.seg, 0)?.reply()?;
-    let raw = unsafe { std::slice::from_raw_parts(shm.ptr, size) };
+    let raw = if let Some(ref shm) = *shm_guard {
+        conn.shm_get_image(root, 0, 0, geo.width, geo.height, u32::MAX, ImageFormat::Z_PIXMAP.into(), shm.seg, 0)?.reply()?;
+        unsafe { std::slice::from_raw_parts(shm.ptr, size) }
+    } else {
+        &conn.get_image(ImageFormat::Z_PIXMAP, root, 0, 0, geo.width, geo.height, u32::MAX)?.reply()?.data
+    };
     let elapsed = t0.elapsed();
     let pixel_count = (w as usize) * (h as usize);
 

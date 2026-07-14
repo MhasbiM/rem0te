@@ -46,7 +46,7 @@ function getRelativeCoords(clientX: number, clientY: number): { x: number; y: nu
 }
 
 function onMouseMove(e: MouseEvent) {
-  if (!props.connected) return
+  if (!props.currentMachine) return
   const rect = containerRef.value?.getBoundingClientRect()
   if (rect) {
     cursorX.value = e.clientX - rect.left
@@ -63,7 +63,7 @@ function onMouseMove(e: MouseEvent) {
 }
 
 function onMouseDown(e: MouseEvent) {
-  if (!props.connected) return
+  if (!props.currentMachine) return
   emit('inputEvent', {
     type: 'mouse_button',
     target: props.currentMachine || '',
@@ -73,7 +73,7 @@ function onMouseDown(e: MouseEvent) {
 }
 
 function onMouseUp(e: MouseEvent) {
-  if (!props.connected) return
+  if (!props.currentMachine) return
   emit('inputEvent', {
     type: 'mouse_button',
     target: props.currentMachine || '',
@@ -83,7 +83,7 @@ function onMouseUp(e: MouseEvent) {
 }
 
 function onWheel(e: WheelEvent) {
-  if (!props.connected) return
+  if (!props.currentMachine) return
   e.preventDefault()
   emit('inputEvent', {
     type: 'mouse_scroll',
@@ -94,7 +94,7 @@ function onWheel(e: WheelEvent) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
-  if (!props.connected) return
+  if (!props.currentMachine) return
   emit('inputEvent', {
     type: 'key_event',
     target: props.currentMachine || '',
@@ -104,7 +104,7 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 function onKeyUp(e: KeyboardEvent) {
-  if (!props.connected) return
+  if (!props.currentMachine) return
   emit('inputEvent', {
     type: 'key_event',
     target: props.currentMachine || '',
@@ -189,7 +189,7 @@ onUnmounted(() => {
 
       <!-- Cursor overlay -->
       <div
-        v-if="connected && showCursor"
+        v-if="currentMachine && showCursor"
         class="cursor-overlay"
         :style="{ left: cursorX + 'px', top: cursorY + 'px' }"
       >
@@ -307,10 +307,6 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   outline: none;
-}
-
-.screen-container.connected {
-  cursor: none;
 }
 
 .screen-placeholder {
