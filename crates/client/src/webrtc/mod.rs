@@ -36,14 +36,14 @@ use crate::input::InputEngine;
 /// Max chunk size for data channel (must be < 64KB SCTP limit).
 const CHUNK_SIZE: usize = 60_000;
 
-/// JPEG quality. Higher = better.
-const JPEG_QUALITY: u8 = 68;
+/// JPEG quality. Lower = faster encoding + smaller chunks.
+const JPEG_QUALITY: u8 = 55;
 
-/// Max width. Full HD for sharp image.
-const MAX_FRAME_WIDTH: u32 = 1920;
+/// Max width: 1280 for faster X11 capture (~60ms vs ~125ms at 1920).
+const MAX_FRAME_WIDTH: u32 = 1280;
 
-/// Target FPS. X11 GetImage is the bottleneck (~100-130ms per frame).
-const STREAM_FPS: u32 = 12;
+/// Target FPS.
+const STREAM_FPS: u32 = 10;
 
 /// Manages a WebRTC session for one remote viewer.
 pub struct WebRtcManager {
@@ -275,7 +275,6 @@ impl WebRtcManager {
 /// Capture a frame, draw cursor, downscale, encode to JPEG.
 fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
     let frame = capture.capture_frame()?;
-    let cursor = capture.cursor_position();
 
     // Determine output size
     let (out_w, out_h) = if frame.width > MAX_FRAME_WIDTH {
@@ -294,17 +293,8 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
         rgb.push(chunk[0]); // B
     }
 
-    // Draw cursor on the RGB buffer before downscaling
-    if let Some(cur) = cursor {
-        if cur.x < frame.width && cur.y < frame.height {
-            draw_cursor(&mut rgb, frame.width, frame.height, cur.x, cur.y);
-            debug!("cursor drawn at ({}, {})", cur.x, cur.y);
-        } else {
-            info!("cursor out of bounds: ({}, {}) vs frame {}x{}", cur.x, cur.y, frame.width, frame.height);
-        }
-    } else {
-        info!("no cursor position from capture engine — cursor not drawn");
-    }
+    // Cursor is rendered by frontend (CSS overlay), not drawn on frame.
+    // This avoids JPEG artifacts on the cursor and keeps it sharp.
 
     let src_img = image::RgbImage::from_raw(frame.width, frame.height, rgb)
         .context("failed to create source image")?;

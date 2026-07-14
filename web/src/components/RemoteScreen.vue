@@ -16,6 +16,9 @@ const emit = defineEmits<{
 
 const containerRef = ref<HTMLDivElement | null>(null)
 const isFullscreen = ref(false)
+const cursorX = ref(0)
+const cursorY = ref(0)
+const showCursor = ref(false)
 
 // Get display dimensions of the connected machine
 const currentMachineInfo = computed(() =>
@@ -44,6 +47,12 @@ function getRelativeCoords(clientX: number, clientY: number): { x: number; y: nu
 
 function onMouseMove(e: MouseEvent) {
   if (!props.connected) return
+  const rect = containerRef.value?.getBoundingClientRect()
+  if (rect) {
+    cursorX.value = e.clientX - rect.left
+    cursorY.value = e.clientY - rect.top
+    showCursor.value = true
+  }
   const { x, y } = getRelativeCoords(e.clientX, e.clientY)
   emit('inputEvent', {
     type: 'mouse_move',
@@ -177,6 +186,17 @@ onUnmounted(() => {
         class="screen-video"
         alt="Remote desktop"
       />
+
+      <!-- Cursor overlay -->
+      <div
+        v-if="connected && showCursor"
+        class="cursor-overlay"
+        :style="{ left: cursorX + 'px', top: cursorY + 'px' }"
+      >
+        <svg width="24" height="32" viewBox="0 0 24 32">
+          <polygon points="0,0 18,12 11,12 15,24 10,24 6,13 0,18" fill="white" stroke="black" stroke-width="1.5"/>
+        </svg>
+      </div>
 
       <!-- Stream info overlay -->
       <div v-if="connected" class="stream-overlay">
@@ -338,5 +358,14 @@ onUnmounted(() => {
 
 .fullscreen-btn:hover {
   background: rgba(0, 0, 0, 0.7);
+}
+
+/* Cursor overlay */
+.cursor-overlay {
+  position: absolute;
+  pointer-events: none;
+  z-index: 100;
+  transform: translate(0, 0);
+  filter: drop-shadow(1px 1px 1px rgba(0,0,0,0.5));
 }
 </style>
