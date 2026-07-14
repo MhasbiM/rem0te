@@ -6,9 +6,9 @@ license.workspace = true
 
 [features]
 default = ["x11-capture"]
-# GStreamer/PipeWire capture for Wayland (needs system libs)
+# GStreamer/PipeWire for Wayland (needs system libs)
 linux-media = ["gstreamer", "gstreamer-app", "gstreamer-video", "ashpd", "evdev"]
-# X11 screen capture (pure Rust, works on Ubuntu 22 default X11)
+# X11 screen capture (pure Rust, default on Linux)
 x11-capture = ["x11rb"]
 
 [dependencies]
@@ -61,8 +61,11 @@ gstreamer-video = { version = "0.23", optional = true }
 ashpd = { version = "0.10", features = ["tokio", "pipewire"], optional = true }
 evdev = { version = "0.12", optional = true }
 
-# X11 capture (pure Rust, no system deps needed)
+# X11 capture (pure Rust)
 x11rb = { version = "0.13", optional = true, features = ["allow-unsafe-code"] }
+
+# Input injection (uses XTest via x11rb)
+enigo = { version = "0.3", default-features = false, features = ["x11rb"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreGraphics for screen capture & input

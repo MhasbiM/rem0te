@@ -299,7 +299,10 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
     if let Some(cur) = cursor {
         if cur.x < frame.width && cur.y < frame.height {
             draw_cursor(&mut rgb, frame.width, frame.height, cur.x, cur.y);
+            debug!("cursor drawn at ({}, {})", cur.x, cur.y);
         }
+    } else {
+        debug!("no cursor position available");
     }
 
     let src_img = image::RgbImage::from_raw(frame.width, frame.height, rgb)
@@ -322,49 +325,78 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
     Ok(jpeg_bytes)
 }
 
-/// Draw a simple arrow cursor onto the RGB pixel buffer.
-fn draw_cursor(rgb: &mut [u8], width: u32, _height: u32, cx: u32, cy: u32) {
-    // Simple 11x17 arrow shape (standard macOS cursor)
-    let shape: &[(i32, i32)] = &[
-        // Tip
-        (0, 0),
-        // Top edge
-        (0, 0), (1, -1), (2, -2), (3, -3), (4, -4), (5, -5), (6, -6), (7, -5), (8, -4),
-        // Right edge down
-        (8, -4), (8, -3), (7, -2), (6, -1), (5, 0), (5, 1), (5, 2),
-        // Bottom
-        (5, 2), (4, 1), (3, 1), (2, 1), (1, 1), (0, 1),
-        // Left edge up
-        (0, 1), (0, 0),
+/// Draw a visible arrow cursor on the RGB pixel buffer.
+/// The cursor tip is at (cx, cy), pointing up-left (standard arrow).
+fn draw_cursor(rgb: &mut [u8], width: u32, height: u32, cx: u32, cy: u32) {
+    // 16x24 pixel arrow cursor (scaled for visibility on Full HD)
+    // Shape: 1 = filled, 0 = empty (outline only)
+    #[rustfmt::skip]
+    let cursor_shape: [[u8; 16]; 24] = [
+        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0],
+        [1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0],
+        [1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0],
+        [1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0],
+        [1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0],
     ];
 
-    // Draw outline in black, fill in white
+    let rows = cursor_shape.len() as u32;
+    let cols = cursor_shape[0].len() as u32;
+
     let black: [u8; 3] = [0, 0, 0];
     let white: [u8; 3] = [255, 255, 255];
 
-    for &(dx, dy) in shape {
-        let px = cx as i32 + dx;
-        let py = cy as i32 + dy;
-        if px >= 0 && py >= 0 && (px as u32) < width {
+    for row in 0..rows {
+        for col in 0..cols {
+            let px = cx as i32 + col as i32;
+            let py = cy as i32 + row as i32;
+
+            if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
+                continue;
+            }
+
             let idx = ((py as u32) * width + (px as u32)) as usize * 3;
-            if idx + 2 < rgb.len() {
-                // Outline (shift by 1px all directions)
-                for &(odx, ody) in &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let opx = px + odx;
-                    let opy = py + ody;
-                    if opx >= 0 && opy >= 0 && (opx as u32) < width {
-                        let oidx = ((opy as u32) * width + (opx as u32)) as usize * 3;
-                        if oidx + 2 < rgb.len() {
-                            rgb[oidx] = black[0];
-                            rgb[oidx + 1] = black[1];
-                            rgb[oidx + 2] = black[2];
-                        }
-                    }
-                }
-                // Fill white
+            if idx + 2 >= rgb.len() {
+                continue;
+            }
+
+            if cursor_shape[row as usize][col as usize] == 1 {
+                // Filled pixel: black outline, white interior
+                // Draw white first, then black border
                 rgb[idx] = white[0];
                 rgb[idx + 1] = white[1];
                 rgb[idx + 2] = white[2];
+
+                // Check neighbors — if any neighbor is 0, this is a border pixel
+                let is_border = col == 0 || col == cols - 1 || row == 0 || row == rows - 1
+                    || (col > 0 && cursor_shape[row as usize][col as usize - 1] == 0)
+                    || (col + 1 < cols && cursor_shape[row as usize][col as usize + 1] == 0)
+                    || (row > 0 && cursor_shape[row as usize - 1][col as usize] == 0)
+                    || (row + 1 < rows && cursor_shape[row as usize + 1][col as usize] == 0);
+
+                if is_border {
+                    rgb[idx] = black[0];
+                    rgb[idx + 1] = black[1];
+                    rgb[idx + 2] = black[2];
+                }
             }
         }
     }
