@@ -2,7 +2,7 @@
 //!
 //! Uses `enigo` which wraps X11's XTest extension for keyboard/mouse injection.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use anyhow::Result;
 
@@ -11,7 +11,7 @@ use super::InputImpl;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 
 pub struct LinuxInput {
-    enigo: RefCell<Enigo>,
+    enigo: Mutex<Enigo>,
 }
 
 impl LinuxInput {
@@ -19,7 +19,7 @@ impl LinuxInput {
         let enigo = Enigo::new(&Settings::default())
             .map_err(|e| anyhow::anyhow!("enigo init failed: {e}"))?;
         tracing::info!("Linux input ready (enigo/XTest)");
-        Ok(Self { enigo: RefCell::new(enigo) })
+        Ok(Self { enigo: Mutex::new(enigo) })
     }
 }
 
@@ -27,13 +27,13 @@ impl InputImpl for LinuxInput {
     fn send_key_event(&self, key_code: u16, pressed: bool) -> Result<()> {
         if let Some(key) = map_dom_keycode(key_code) {
             let dir = if pressed { Direction::Press } else { Direction::Release };
-            self.enigo.borrow_mut().key(key, dir)?;
+            self.enigo.lock().unwrap().key(key, dir)?;
         }
         Ok(())
     }
 
     fn send_mouse_move(&self, x: f64, y: f64) -> Result<()> {
-        self.enigo.borrow_mut().move_mouse(x as i32, y as i32, Coordinate::Abs)?;
+        self.enigo.lock().unwrap().move_mouse(x as i32, y as i32, Coordinate::Abs)?;
         Ok(())
     }
 
@@ -45,7 +45,7 @@ impl InputImpl for LinuxInput {
             _ => return Ok(()),
         };
         let dir = if pressed { Direction::Press } else { Direction::Release };
-        self.enigo.borrow_mut().button(btn, dir)?;
+        self.enigo.lock().unwrap().button(btn, dir)?;
         Ok(())
     }
 
@@ -53,7 +53,7 @@ impl InputImpl for LinuxInput {
         let length = if dy > 0.0 { 1 } else { -1 };
         let steps = (dy.abs() / 50.0).ceil() as usize;
         for _ in 0..steps.max(1) {
-            self.enigo.borrow_mut().scroll(length, Axis::Vertical)?;
+            self.enigo.lock().unwrap().scroll(length, Axis::Vertical)?;
         }
         Ok(())
     }
@@ -66,21 +66,21 @@ impl InputImpl for LinuxInput {
 fn map_dom_keycode(code: u16) -> Option<Key> {
     match code {
         // Letters → Key::Char
-        65 => Some(Key::Char('a')), 66 => Some(Key::Char('b')), 67 => Some(Key::Char('c')),
-        68 => Some(Key::Char('d')), 69 => Some(Key::Char('e')), 70 => Some(Key::Char('f')),
-        71 => Some(Key::Char('g')), 72 => Some(Key::Char('h')), 73 => Some(Key::Char('i')),
-        74 => Some(Key::Char('j')), 75 => Some(Key::Char('k')), 76 => Some(Key::Char('l')),
-        77 => Some(Key::Char('m')), 78 => Some(Key::Char('n')), 79 => Some(Key::Char('o')),
-        80 => Some(Key::Char('p')), 81 => Some(Key::Char('q')), 82 => Some(Key::Char('r')),
-        83 => Some(Key::Char('s')), 84 => Some(Key::Char('t')), 85 => Some(Key::Char('u')),
-        86 => Some(Key::Char('v')), 87 => Some(Key::Char('w')), 88 => Some(Key::Char('x')),
-        89 => Some(Key::Char('y')), 90 => Some(Key::Char('z')),
+        65 => Some(Key::Layout('a')), 66 => Some(Key::Layout('b')), 67 => Some(Key::Layout('c')),
+        68 => Some(Key::Layout('d')), 69 => Some(Key::Layout('e')), 70 => Some(Key::Layout('f')),
+        71 => Some(Key::Layout('g')), 72 => Some(Key::Layout('h')), 73 => Some(Key::Layout('i')),
+        74 => Some(Key::Layout('j')), 75 => Some(Key::Layout('k')), 76 => Some(Key::Layout('l')),
+        77 => Some(Key::Layout('m')), 78 => Some(Key::Layout('n')), 79 => Some(Key::Layout('o')),
+        80 => Some(Key::Layout('p')), 81 => Some(Key::Layout('q')), 82 => Some(Key::Layout('r')),
+        83 => Some(Key::Layout('s')), 84 => Some(Key::Layout('t')), 85 => Some(Key::Layout('u')),
+        86 => Some(Key::Layout('v')), 87 => Some(Key::Layout('w')), 88 => Some(Key::Layout('x')),
+        89 => Some(Key::Layout('y')), 90 => Some(Key::Layout('z')),
 
         // Numbers → Key::Char
-        48 => Some(Key::Char('0')), 49 => Some(Key::Char('1')), 50 => Some(Key::Char('2')),
-        51 => Some(Key::Char('3')), 52 => Some(Key::Char('4')), 53 => Some(Key::Char('5')),
-        54 => Some(Key::Char('6')), 55 => Some(Key::Char('7')), 56 => Some(Key::Char('8')),
-        57 => Some(Key::Char('9')),
+        48 => Some(Key::Layout('0')), 49 => Some(Key::Layout('1')), 50 => Some(Key::Layout('2')),
+        51 => Some(Key::Layout('3')), 52 => Some(Key::Layout('4')), 53 => Some(Key::Layout('5')),
+        54 => Some(Key::Layout('6')), 55 => Some(Key::Layout('7')), 56 => Some(Key::Layout('8')),
+        57 => Some(Key::Layout('9')),
 
         // Function keys
         112 => Some(Key::F1), 113 => Some(Key::F2), 114 => Some(Key::F3),
@@ -102,12 +102,12 @@ fn map_dom_keycode(code: u16) -> Option<Key> {
         45 => Some(Key::Insert),
 
         // Symbols → Key::Char
-        186 => Some(Key::Char(';')),  187 => Some(Key::Char('=')),
-        188 => Some(Key::Char(',')),  189 => Some(Key::Char('-')),
-        190 => Some(Key::Char('.')),  191 => Some(Key::Char('/')),
-        192 => Some(Key::Char('`')),  219 => Some(Key::Char('[')),
-        220 => Some(Key::Char('\\')), 221 => Some(Key::Char(']')),
-        222 => Some(Key::Char('\'')),
+        186 => Some(Key::Layout(';')),  187 => Some(Key::Layout('=')),
+        188 => Some(Key::Layout(',')),  189 => Some(Key::Layout('-')),
+        190 => Some(Key::Layout('.')),  191 => Some(Key::Layout('/')),
+        192 => Some(Key::Layout('`')),  219 => Some(Key::Layout('[')),
+        220 => Some(Key::Layout('\\')), 221 => Some(Key::Layout(']')),
+        222 => Some(Key::Layout('\'')),
 
         _ => {
             tracing::debug!("unmapped keycode: {code}");
