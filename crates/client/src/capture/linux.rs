@@ -168,21 +168,17 @@ fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
 
     let raw = reply.data;
     let pixel_count = (w as usize) * (h as usize);
+    let bpp = raw.len() / pixel_count; // actual bytes per pixel
 
-    let bgra = match depth {
-        24 => {
-            let mut out = Vec::with_capacity(pixel_count * 4);
-            for chunk in raw.chunks_exact(3) {
-                out.push(chunk[0]); out.push(chunk[1]); out.push(chunk[2]);
-                out.push(255);
-            }
-            out
-        }
-        32 => {
+    let bgra = match bpp {
+        4 => {
+            // BGRX (32-bit, X = unused/padding)
             let mut out = Vec::with_capacity(pixel_count * 4);
             for chunk in raw.chunks_exact(4) {
-                out.push(chunk[0]); out.push(chunk[1]); out.push(chunk[2]);
-                out.push(255);
+                out.push(chunk[0]); // B
+                out.push(chunk[1]); // G
+                out.push(chunk[2]); // R
+                out.push(255);      // A
             }
             let full = raw.len() / 4;
             for _ in full..pixel_count {
@@ -190,7 +186,17 @@ fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
             }
             out
         }
-        16 => {
+        3 => {
+            // BGR (24-bit, tightly packed)
+            let mut out = Vec::with_capacity(pixel_count * 4);
+            for chunk in raw.chunks_exact(3) {
+                out.push(chunk[0]); out.push(chunk[1]); out.push(chunk[2]);
+                out.push(255);
+            }
+            out
+        }
+        2 => {
+            // RGB565 (16-bit)
             let mut out = Vec::with_capacity(pixel_count * 4);
             for chunk in raw.chunks_exact(2) {
                 let p = u16::from_le_bytes([chunk[0], chunk[1]]);
@@ -201,13 +207,16 @@ fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
             }
             out
         }
-        d => anyhow::bail!("unsupported X11 color depth: {d}"),
+        n => anyhow::bail!(
+            "unexpected X11 bytes-per-pixel: {n} (depth={depth}, raw={}B, w={w}, h={h})",
+            raw.len()
+        ),
     };
 
     let elapsed = t0.elapsed();
     tracing::debug!(
-        "X11 capture: {}x{} depth={} {}B → {}B BGRA in {:?}",
-        w, h, depth, raw.len(), bgra.len(), elapsed
+        "X11 capture: {}x{} depth={} bpp={} {}B → {}B BGRA in {:?}",
+        w, h, depth, bpp, raw.len(), bgra.len(), elapsed
     );
 
     Ok(CapturedFrame {
