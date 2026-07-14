@@ -36,14 +36,14 @@ use crate::input::InputEngine;
 /// Max chunk size for data channel (must be < 64KB SCTP limit).
 const CHUNK_SIZE: usize = 60_000;
 
-/// JPEG quality. High = sharp.
-const JPEG_QUALITY: u8 = 70;
+/// JPEG quality: 60 is good balance quality vs speed.
+const JPEG_QUALITY: u8 = 60;
 
-/// Max width. Full HD with SHM capture is near-instant.
-const MAX_FRAME_WIDTH: u32 = 1920;
+/// Max frame width. 1600px for quality + smoothness.
+const MAX_FRAME_WIDTH: u32 = 1600;
 
-/// Target FPS. SHM capture is fast enough for smooth video.
-const STREAM_FPS: u32 = 15;
+/// Target FPS.
+const STREAM_FPS: u32 = 18;
 
 /// Manages a WebRTC session for one remote viewer.
 pub struct WebRtcManager {

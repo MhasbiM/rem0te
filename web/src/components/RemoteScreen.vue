@@ -53,6 +53,7 @@ function onMouseMove(e: MouseEvent) {
     cursorY.value = e.clientY - rect.top
     showCursor.value = true
   }
+  // Throttle to avoid flooding
   const { x, y } = getRelativeCoords(e.clientX, e.clientY)
   emit('inputEvent', {
     type: 'mouse_move',
@@ -64,6 +65,7 @@ function onMouseMove(e: MouseEvent) {
 
 function onMouseDown(e: MouseEvent) {
   if (!props.currentMachine) return
+  containerRef.value?.focus()  // ensure keyboard focus
   emit('inputEvent', {
     type: 'mouse_button',
     target: props.currentMachine || '',
@@ -193,8 +195,8 @@ onUnmounted(() => {
         class="cursor-overlay"
         :style="{ left: cursorX + 'px', top: cursorY + 'px' }"
       >
-        <svg width="24" height="32" viewBox="0 0 24 32">
-          <polygon points="0,0 18,12 11,12 15,24 10,24 6,13 0,18" fill="white" stroke="black" stroke-width="1.5"/>
+        <svg width="20" height="28" viewBox="0 0 20 28" style="pointer-events:none">
+          <polygon points="0,0 14,10 8,10 12,20 7,20 4,11 0,14" fill="white" stroke="black" stroke-width="1.2"/>
         </svg>
       </div>
 
@@ -307,6 +309,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   outline: none;
+  cursor: none;
 }
 
 .screen-placeholder {
