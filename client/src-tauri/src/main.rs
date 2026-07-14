@@ -79,58 +79,45 @@ async fn start_serving(
         .map_err(|e| e.to_string())?;
 
     // Start screen capture
-    let mut capture = state.screen_capture.lock().await;
-    capture.start().map_err(|e| e.to_string())?;
-    drop(capture);
+    let mut cap = state.screen_capture.lock().await;
+    cap.start().map_err(|e| e.to_string())?;
+    drop(cap);
 
-    // Spawn continuous capture + send loop
+    // Single task: capture+send + input receive (no mutex deadlock)
     let manager_arc = state.connection_manager.clone();
     let capture_arc = state.screen_capture.clone();
     tokio::spawn(async move {
         loop {
-            let mut mgr = manager_arc.lock().await;
-            if mgr.role != SessionRole::Target {
-                break;
-            }
-            let mut cap = capture_arc.lock().await;
-            match cap.capture_frame() {
-                Ok(frame) => {
-                    if mgr.relay.send_mut(relay_client::MSG_FRAME, &frame).await.is_err() {
-                        log::info!("Relay send failed, stopping capture");
-                        break;
+            tokio::select! {
+                // ── Capture & send frame ──────────────────────
+                _ = async {
+                    let mut mgr = manager_arc.lock().await;
+                    if mgr.role != SessionRole::Target { return; }
+                    let mut cap = capture_arc.lock().await;
+                    if let Ok(frame) = cap.capture_frame() {
+                        if mgr.relay.send_mut(relay_client::MSG_FRAME, &frame).await.is_err() {
+                            log::info!("Relay send failed, stopping");
+                            mgr.disconnect();
+                            return;
+                        }
                     }
-                }
-                Err(e) => {
-                    log::error!("Capture error: {}", e);
-                }
-            }
-            drop(cap);
-            drop(mgr);
-            // Run uncapped — actual speed depends on capture+encode
-            tokio::task::yield_now().await;
-        }
-    });
-
-    // Input receiver: non-blocking poll (100ms interval, try_lock, 1ms timeout)
-    let manager_arc2 = state.connection_manager.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            let mut mgr = match manager_arc2.try_lock() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if mgr.role != SessionRole::Target || !mgr.relay.is_connected() {
-                break;
-            }
-            if let Ok(Ok((relay_client::MSG_INPUT, data))) = tokio::time::timeout(
-                tokio::time::Duration::from_millis(1),
-                mgr.relay.recv_mut(),
-            ).await {
-                if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&data) {
-                    #[cfg(target_os = "linux")]
-                    simulate_input(&event);
-                }
+                } => {}
+                
+                // ── Receive input ────────────────────────────
+                _ = async {
+                    let mut mgr = manager_arc.lock().await;
+                    if mgr.role != SessionRole::Target || !mgr.relay.is_connected() { return; }
+                    match mgr.relay.recv_mut().await {
+                        Ok((relay_client::MSG_INPUT, data)) => {
+                            if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&data) {
+                                #[cfg(target_os = "linux")]
+                                simulate_input(&event);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(_) => {}
+                    }
+                } => {}
             }
         }
     });

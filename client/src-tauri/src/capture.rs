@@ -189,6 +189,7 @@ impl ScreenCapture {
     #[cfg(target_os = "linux")]
     fn capture_x11(&mut self) -> Result<Vec<u8>> {
         use image::ImageEncoder;
+        use image::codecs::png::{PngEncoder, CompressionType, FilterType};
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::*;
 
@@ -207,15 +208,18 @@ impl ScreenCapture {
             .reply()?
             .data;
 
-        // BGRA → RGB
-        let rgb = bgra_to_rgb(&raw, w, h);
-
-        // Fast JPEG encode (quality 25 = small + fast)
-        let mut jpeg = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 25);
-        encoder.write_image(&rgb, w, h, image::ExtendedColorType::Rgb8)?;
-        self.last_frame = jpeg.clone();
-        Ok(jpeg)
+        // Fast PNG encode: no filter + fast compression (much faster than JPEG)
+        let mut png = Vec::new();
+        let encoder = PngEncoder::new_with_quality(
+            &mut png,
+            CompressionType::Fast,
+            FilterType::NoFilter,
+        );
+        // X11 Z_PIXMAP is BGRA → RGBA (swap R/B)
+        let rgba = bgra_to_rgba(&raw, w, h);
+        encoder.write_image(&rgba, w, h, image::ExtendedColorType::Rgba8)?;
+        self.last_frame = png.clone();
+        Ok(png)
     }
 
     #[cfg(target_os = "linux")]
@@ -242,6 +246,19 @@ impl ScreenCapture {
         encoder.write_image(&img, w, h, image::ExtendedColorType::Rgba8)?;
         Ok(png)
     }
+}
+
+/// BGRA → RGBA (swap B/R, keep alpha)
+fn bgra_to_rgba(bgra: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let mut rgba = vec![0u8; bgra.len()];
+    for chunk in bgra.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
+        let (src, dst) = chunk;
+        dst[0] = src[2]; // R
+        dst[1] = src[1]; // G
+        dst[2] = src[0]; // B
+        dst[3] = src[3]; // A
+    }
+    rgba
 }
 
 /// BGRA → RGB with 2x downscale (nearest-neighbor, fast)
