@@ -61,13 +61,20 @@ impl InputImpl for LinuxInput {
     fn send_key_event(&self, key_code: u16, pressed: bool) -> Result<()> {
         #[cfg(feature = "x11-capture")]
         if let Some(xc) = dom_to_x11_keycode(key_code) {
-            tracing::debug!("key DOM={} X11={} {}", key_code, xc, if pressed {"DOWN"} else {"UP"});
+            let action = if pressed { "DOWN" } else { "UP" };
+            tracing::info!("key DOM={} X11={} {}", key_code, xc, action);
             self.with_conn(|s| {
                 let t = if pressed { x11rb::protocol::xproto::KEY_PRESS_EVENT }
                         else { x11rb::protocol::xproto::KEY_RELEASE_EVENT };
-                let _ = s.conn.xtest_fake_input(t, xc, 0, 0, 0, 0, 0);
-                let _ = s.conn.flush();
+                if let Err(e) = s.conn.xtest_fake_input(t, xc, 0, 0, 0, 0, 0) {
+                    tracing::error!("xtest key failed: {e}");
+                }
+                if let Err(e) = s.conn.flush() {
+                    tracing::error!("flush failed: {e}");
+                }
             });
+        } else {
+            tracing::info!("key DOM={} unmapped — ignored", key_code);
         }
         Ok(())
     }
@@ -75,7 +82,9 @@ impl InputImpl for LinuxInput {
     fn send_mouse_move(&self, x: f64, y: f64) -> Result<()> {
         #[cfg(feature = "x11-capture")]
         self.with_conn(|s| {
-            let _ = s.conn.warp_pointer(x11rb::NONE, s.root, 0, 0, 0, 0, x as i16, y as i16);
+            if let Err(e) = s.conn.warp_pointer(x11rb::NONE, s.root, 0, 0, 0, 0, x as i16, y as i16) {
+                tracing::error!("warp_pointer failed: {e}");
+            }
             let _ = s.conn.flush();
         });
         Ok(())
@@ -88,7 +97,9 @@ impl InputImpl for LinuxInput {
             self.with_conn(|s| {
                 let t = if pressed { x11rb::protocol::xproto::BUTTON_PRESS_EVENT }
                         else { x11rb::protocol::xproto::BUTTON_RELEASE_EVENT };
-                let _ = s.conn.xtest_fake_input(t, b, 0, 0, 0, 0, 0);
+                if let Err(e) = s.conn.xtest_fake_input(t, b, 0, 0, 0, 0, 0) {
+                    tracing::error!("xtest button failed: {e}");
+                }
                 let _ = s.conn.flush();
             });
         }

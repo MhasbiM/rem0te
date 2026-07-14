@@ -122,7 +122,6 @@ impl CaptureImpl for LinuxCapture {
             let conn = conn.lock().ok()?;
             let screen = &conn.setup().roots[self.x11_screen_num];
             let reply = conn.query_pointer(screen.root).ok()?.reply().ok()?;
-            tracing::trace!("cursor at ({}, {})", reply.root_x, reply.root_y);
             return Some(CursorPosition {
                 x: reply.root_x as u32,
                 y: reply.root_y as u32,
