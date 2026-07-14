@@ -1,11 +1,11 @@
 //! Linux screen capture.
 //!
 //! ## Strategies (auto-detected)
-//! 1. **X11** (default on Ubuntu ≤22): `x11rb` pure-Rust capture — zero system deps
-//! 2. **Wayland** (future): PipeWire + xdg-desktop-portal via GStreamer (`linux-media` feature)
-//! 3. **Fallback**: blank frames
-//!
-//! Auto-detection: checks `$XDG_SESSION_TYPE` and `$WAYLAND_DISPLAY`.
+//! 1. **X11**: `x11rb` pure-Rust capture — tries $DISPLAY, :0, :1
+//! 2. **Wayland** (future): PipeWire + GStreamer (`linux-media` feature)
+//! 3. **Fallback**: blank frames (allows client to run, just no video)
+
+use std::cell::Cell;
 
 use anyhow::{Context, Result};
 
@@ -14,8 +14,19 @@ use super::{CapturedFrame, CaptureImpl, CursorPosition};
 pub struct LinuxCapture {
     display_width: u32,
     display_height: u32,
-    /// Whether X11 capture is available (X11 session + x11-capture feature).
-    is_x11: bool,
+    /// Whether X11 capture was successfully initialized.
+    x11_available: Cell<bool>,
+    /// Cached X11 display name for reconnection each frame.
+    x11_display: Option<String>,
+}
+
+pub struct LinuxCapture {
+    display_width: u32,
+    display_height: u32,
+    /// Whether X11 capture was successfully initialized.
+    x11_available: bool,
+    /// Cached X11 display name for reconnection each frame.
+    x11_display: Option<String>,
 }
 
 impl LinuxCapture {
@@ -28,14 +39,27 @@ impl LinuxCapture {
 
         if is_wayland {
             tracing::info!("Wayland detected — screen capture not yet implemented. Enable `linux-media` feature for PipeWire support.");
+            return Ok(Self {
+                display_width: w,
+                display_height: h,
+                x11_available: Cell::new(false),
+                x11_display: None,
+            });
+        }
+
+        // Try to find a working X11 display
+        let display = find_x11_display();
+        if let Some(ref dpy) = display {
+            tracing::info!("X11 display '{}' — using x11rb for screen capture", dpy);
         } else {
-            tracing::info!("X11 detected — using x11rb for screen capture");
+            tracing::warn!("No X11 display found (try: export DISPLAY=:0). Falling back to blank frames.");
         }
 
         Ok(Self {
             display_width: w,
             display_height: h,
-            is_x11: !is_wayland && cfg!(feature = "x11-capture"),
+            x11_available: Cell::new(display.is_some() && cfg!(feature = "x11-capture")),
+            x11_display: display,
         })
     }
 }
@@ -51,18 +75,18 @@ impl CaptureImpl for LinuxCapture {
     }
 
     fn capture_frame(&self) -> Result<CapturedFrame> {
-        if self.is_x11 {
-            capture_x11()
-        } else {
-            // Stub: blank frame
-            let size = (self.display_width * self.display_height * 4) as usize;
-            Ok(CapturedFrame {
-                data: vec![0u8; size],
-                width: self.display_width,
-                height: self.display_height,
-                timestamp: std::time::Instant::now(),
-            })
+        if self.x11_available.get() {
+            match capture_x11(self.x11_display.as_deref()) {
+                Ok(frame) => return Ok(frame),
+                Err(e) => {
+                    tracing::warn!("X11 capture failed, falling back to blank: {e}");
+                    self.x11_available.set(false);
+                }
+            }
         }
+
+        // Blank frame fallback
+        blank_frame(self.display_width, self.display_height)
     }
 }
 
@@ -71,13 +95,13 @@ impl CaptureImpl for LinuxCapture {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "x11-capture")]
-fn capture_x11() -> Result<CapturedFrame> {
+fn capture_x11(display: Option<&str>) -> Result<CapturedFrame> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
     use x11rb::rust_connection::RustConnection;
 
-    let (conn, screen_num) = RustConnection::connect(None)
-        .context("failed to connect to X11 server — is DISPLAY set?")?;
+    let (conn, screen_num) = RustConnection::connect(display)
+        .context("failed to connect to X11 server — try: export DISPLAY=:0")?;
 
     let screen = &conn.setup().roots[screen_num];
     let root = screen.root;
@@ -113,8 +137,7 @@ fn capture_x11() -> Result<CapturedFrame> {
     // Pad if image depth is 24-bit (3 bytes/pixel)
     let full_chunks = raw.len() / 4;
     if full_chunks < pixel_count {
-        let remaining = pixel_count - full_chunks;
-        for _ in 0..remaining {
+        for _ in full_chunks..pixel_count {
             bgra.extend_from_slice(&[0, 0, 0, 255]);
         }
     }
@@ -128,8 +151,40 @@ fn capture_x11() -> Result<CapturedFrame> {
 }
 
 #[cfg(not(feature = "x11-capture"))]
-fn capture_x11() -> Result<CapturedFrame> {
+fn capture_x11(_display: Option<&str>) -> Result<CapturedFrame> {
     anyhow::bail!("x11-capture feature not enabled");
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Find a working X11 display. Tries $DISPLAY, then probes common defaults.
+fn find_x11_display() -> Option<String> {
+    if let Ok(dpy) = std::env::var("DISPLAY") {
+        if !dpy.is_empty() {
+            return Some(dpy);
+        }
+    }
+
+    #[cfg(feature = "x11-capture")]
+    for candidate in &[":0", ":0.0", ":1", ":1.0"] {
+        if x11rb::rust_connection::RustConnection::connect(Some(candidate)).is_ok() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
+/// Return a blank (black) frame.
+fn blank_frame(w: u32, h: u32) -> Result<CapturedFrame> {
+    Ok(CapturedFrame {
+        data: vec![0u8; (w * h * 4) as usize],
+        width: w,
+        height: h,
+        timestamp: std::time::Instant::now(),
+    })
 }
 
 // ---------------------------------------------------------------------------
