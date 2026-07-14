@@ -30,7 +30,7 @@ core-foundation = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11 = "2"
-x11rb = "0.13"
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "resource_manager", "xinput"] }
 
 [features]
 default = ["custom-protocol"]

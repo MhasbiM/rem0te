@@ -59,15 +59,48 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
     }
   }, []);
 
-  // Keyboard event forwarding
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    // Forward keyboard events to Tauri backend
-    console.log('Key event to forward:', e.key, e.code);
-    // In production: invoke('send_key_event', { key: e.key, code: e.code, type: 'down' })
+  // ── Input forwarding ──────────────────────────────────────────
+
+  const sendInput = useCallback((type_: string, payload: Record<string, unknown>) => {
+    invoke('send_input_event', {
+      eventType: type_,
+      keyCode: payload.key_code || null,
+      x: payload.x || null,
+      y: payload.y || null,
+      button: payload.button || null,
+    }).catch(() => {});
   }, []);
 
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    e.preventDefault();
+    sendInput('keyDown', { key_code: e.code });
+  }, [sendInput]);
+
+  const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
+    e.preventDefault();
+    sendInput('keyUp', { key_code: e.code });
+  }, [sendInput]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 1920;
+    const y = ((e.clientY - rect.top) / rect.height) * 1080;
+    sendInput('mouseMove', { x, y });
+  }, [sendInput]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    const btn = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
+    sendInput('mouseDown', { button: btn });
+  }, [sendInput]);
+
+  const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    const btn = e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
+    sendInput('mouseUp', { button: btn });
+  }, [sendInput]);
+
   return (
-    <div className="h-full flex flex-col bg-dark-950" onKeyDown={handleKeyDown} tabIndex={0}>
+    <div className="h-full flex flex-col bg-dark-950" onKeyDown={handleKeyDown} onKeyUp={handleKeyUp} tabIndex={0}>
       {/* Toolbar */}
       <div className="bg-dark-900 border-b border-dark-700 px-4 py-2 flex items-center gap-2">
         {/* Connection info */}
@@ -99,14 +132,13 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
       </div>
 
       {/* Remote desktop canvas */}
-      <div ref={canvasRef} className="flex-1 flex items-center justify-center bg-black p-2">
+      <div ref={canvasRef} className="flex-1 flex items-center justify-center bg-black p-2"
+        onMouseMove={handleMouseMove}
+        onMouseDown={handleMouseDown}
+        onMouseUp={handleMouseUp}
+      >
         {frameData ? (
-          <img
-            src={frameData}
-            alt="Remote desktop"
-            className="max-w-full max-h-full object-contain"
-            style={{ imageRendering: 'auto' }}
-          />
+          <img src={frameData} alt="Remote" className="max-w-full max-h-full object-contain" />
         ) : (
           <div className="text-dark-200 text-center">
             <Monitor className="w-16 h-16 mx-auto mb-3 text-dark-700" />

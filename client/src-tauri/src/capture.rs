@@ -170,6 +170,8 @@ impl ScreenCapture {
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::*;
         use x11rb::rust_connection::RustConnection;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
         let (conn, screen_num) = RustConnection::connect(None)
             .map_err(|e| anyhow::anyhow!("X11 connect: {}", e))?;
@@ -181,21 +183,30 @@ impl ScreenCapture {
         self.width = w;
         self.height = h;
 
-        // Downscale to 50% for faster encoding & transfer
-        let (sw, sh) = (w / 2, h / 2);
-
         let raw = conn
             .get_image(ImageFormat::Z_PIXMAP, root, 0, 0, geo.width, geo.height, u32::MAX)?
             .reply()?
             .data;
 
-        // BGRA → RGB, with 2x downscale (simple nearest-neighbor)
-        let rgb = bgra_to_rgb_scaled(&raw, w, h, sw, sh);
+        // Dirty frame detection: hash first 4096 bytes + last 4096 bytes
+        let mut hasher = DefaultHasher::new();
+        raw[..raw.len().min(4096)].hash(&mut hasher);
+        raw[raw.len().saturating_sub(4096)..].hash(&mut hasher);
+        let hash = hasher.finish();
+
+        // Skip if frame unchanged (use static mut for simplicity)
+        static mut LAST_HASH: u64 = 0;
+        if unsafe { LAST_HASH == hash } && !self.last_frame.is_empty() {
+            return Ok(self.last_frame.clone());
+        }
+        unsafe { LAST_HASH = hash; }
+
+        // Full HD: BGRA → RGB
+        let rgb = bgra_to_rgb(&raw, w, h);
 
         let mut jpeg = Vec::new();
-        // Quality 40 = smaller files, faster encode
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 40);
-        encoder.write_image(&rgb, sw, sh, image::ExtendedColorType::Rgb8)?;
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 50);
+        encoder.write_image(&rgb, w, h, image::ExtendedColorType::Rgb8)?;
         self.last_frame = jpeg.clone();
         Ok(jpeg)
     }

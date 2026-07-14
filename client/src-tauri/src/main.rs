@@ -9,6 +9,7 @@ mod relay_client;
 use base64::Engine;
 use capture::ScreenCapture;
 use connection::{ConnectionManager, SessionRole};
+use relay_client::RelayClient;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -38,18 +39,21 @@ async fn start_viewing(
     let manager_arc = state.connection_manager.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             let mut mgr = manager_arc.lock().await;
-            if mgr.role != SessionRole::Viewer {
+            if mgr.role != SessionRole::Viewer || !mgr.relay.is_connected() {
                 break;
             }
-            match mgr.relay.recv().await {
-                Ok(data) => {
+            match mgr.relay.recv_typed().await {
+                Ok((RelayClient::MSG_FRAME, data)) => {
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                     let _ = app.emit("remote-frame", b64);
                 }
+                Ok((RelayClient::MSG_INPUT, _data)) => {
+                    // Input events from target not needed on viewer side
+                }
+                Ok(_) => {} // unknown message type
                 Err(_) => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                 }
             }
         }
@@ -92,7 +96,7 @@ async fn start_serving(
             let mut cap = capture_arc.lock().await;
             match cap.capture_frame() {
                 Ok(frame) => {
-                    let _ = mgr.relay.send(&frame).await;
+                    let _ = mgr.relay.send(RelayClient::MSG_FRAME, &frame).await;
                 }
                 Err(e) => {
                     log::error!("Capture error: {}", e);
@@ -100,8 +104,32 @@ async fn start_serving(
             }
             drop(cap);
             drop(mgr);
-            // Target ~20 FPS — skip frame if previous took too long
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+    });
+
+    // Spawn input receiver loop (Target receives inputs from Viewer)
+    let manager_arc2 = state.connection_manager.clone();
+    tokio::spawn(async move {
+        loop {
+            let mut mgr = manager_arc2.lock().await;
+            if mgr.role != SessionRole::Target || !mgr.relay.is_connected() {
+                break;
+            }
+            match mgr.relay.recv_typed().await {
+                Ok((RelayClient::MSG_INPUT, data)) => {
+                    if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&data) {
+                        #[cfg(target_os = "linux")]
+                        simulate_input(&event);
+                        #[cfg(not(target_os = "linux"))]
+                        let _ = event;
+                    }
+                }
+                Ok(_) => {} // skip frames or unknown on target receive
+                Err(_) => {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                }
+            }
         }
     });
 
@@ -136,7 +164,90 @@ async fn send_input_event(
         "button": button,
     });
     let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
-    manager.relay.send(&bytes).await.map_err(|e| e.to_string())
+    manager.relay.send(RelayClient::MSG_INPUT, &bytes).await.map_err(|e| e.to_string())
+}
+
+/// Simulate keyboard/mouse input on target using xdotool CLI
+#[cfg(target_os = "linux")]
+fn simulate_input(event: &serde_json::Value) {
+    use std::process::Command;
+    let etype = event["type"].as_str().unwrap_or("");
+
+    match etype {
+        "keyDown" => {
+            if let Some(key) = event["key_code"].as_str() {
+                let key_name = key_to_xdotool(key);
+                let _ = Command::new("xdotool").args(["keydown", &key_name]).output();
+            }
+        }
+        "keyUp" => {
+            if let Some(key) = event["key_code"].as_str() {
+                let key_name = key_to_xdotool(key);
+                let _ = Command::new("xdotool").args(["keyup", &key_name]).output();
+            }
+        }
+        "mouseMove" => {
+            if let (Some(x), Some(y)) = (event["x"].as_f64(), event["y"].as_f64()) {
+                let _ = Command::new("xdotool")
+                    .args(["mousemove", "--", &format!("{}", x as i32), &format!("{}", y as i32)])
+                    .output();
+            }
+        }
+        "mouseDown" => {
+            let btn = event["button"].as_str().unwrap_or("left");
+            let _ = Command::new("xdotool").args(["mousedown", btn]).output();
+        }
+        "mouseUp" => {
+            let btn = event["button"].as_str().unwrap_or("left");
+            let _ = Command::new("xdotool").args(["mouseup", btn]).output();
+        }
+        _ => {}
+    }
+}
+
+/// Convert browser KeyboardEvent.code to xdotool key name
+#[cfg(target_os = "linux")]
+fn key_to_xdotool(code: &str) -> &str {
+    match code {
+        "Enter" => "Return",
+        "Escape" => "Escape",
+        "Backspace" => "BackSpace",
+        "Tab" => "Tab",
+        "Space" => "space",
+        "ArrowUp" => "Up",
+        "ArrowDown" => "Down",
+        "ArrowLeft" => "Left",
+        "ArrowRight" => "Right",
+        "ShiftLeft" | "ShiftRight" | "Shift" => "Shift_L",
+        "ControlLeft" | "ControlRight" | "Control" => "Control_L",
+        "AltLeft" | "AltRight" | "Alt" => "Alt_L",
+        "MetaLeft" | "MetaRight" | "Meta" => "Super_L",
+        "Delete" => "Delete",
+        "Home" => "Home",
+        "End" => "End",
+        "PageUp" => "Prior",
+        "PageDown" => "Next",
+        "CapsLock" => "Caps_Lock",
+        "F1" => "F1", "F2" => "F2", "F3" => "F3", "F4" => "F4",
+        "F5" => "F5", "F6" => "F6", "F7" => "F7", "F8" => "F8",
+        "F9" => "F9", "F10" => "F10", "F11" => "F11", "F12" => "F12",
+        "Minus" => "minus", "Equal" => "equal",
+        "BracketLeft" => "bracketleft", "BracketRight" => "bracketright",
+        "Backslash" => "backslash", "Semicolon" => "semicolon",
+        "Quote" => "apostrophe", "Comma" => "comma", "Period" => "period",
+        "Slash" => "slash", "Backquote" => "grave",
+        "Digit0" => "0", "Digit1" => "1", "Digit2" => "2", "Digit3" => "3",
+        "Digit4" => "4", "Digit5" => "5", "Digit6" => "6", "Digit7" => "7",
+        "Digit8" => "8", "Digit9" => "9",
+        "KeyA" => "a", "KeyB" => "b", "KeyC" => "c", "KeyD" => "d",
+        "KeyE" => "e", "KeyF" => "f", "KeyG" => "g", "KeyH" => "h",
+        "KeyI" => "i", "KeyJ" => "j", "KeyK" => "k", "KeyL" => "l",
+        "KeyM" => "m", "KeyN" => "n", "KeyO" => "o", "KeyP" => "p",
+        "KeyQ" => "q", "KeyR" => "r", "KeyS" => "s", "KeyT" => "t",
+        "KeyU" => "u", "KeyV" => "v", "KeyW" => "w", "KeyX" => "x",
+        "KeyY" => "y", "KeyZ" => "z",
+        _ => code,
+    }
 }
 
 fn main() {

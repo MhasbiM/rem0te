@@ -89,29 +89,36 @@ impl RelayClient {
         Ok(())
     }
 
-    /// Send data through the relay
-    pub async fn send(&mut self, data: &[u8]) -> Result<()> {
+    /// Message types for relay protocol
+    pub const MSG_FRAME: u8 = 0;
+    pub const MSG_INPUT: u8 = 1;
+
+    /// Send data through the relay with type prefix
+    pub async fn send(&mut self, msg_type: u8, data: &[u8]) -> Result<()> {
         let stream = self.stream.as_mut()
             .ok_or_else(|| anyhow::anyhow!("Relay not connected"))?;
-        // Prefix with 4-byte length
-        let len = data.len() as u32;
-        stream.write_all(&len.to_be_bytes()).await?;
+        let total_len = (1 + 4 + data.len()) as u32;
+        stream.write_all(&total_len.to_be_bytes()).await?;
+        stream.write_all(&[msg_type]).await?;
+        let payload_len = data.len() as u32;
+        stream.write_all(&payload_len.to_be_bytes()).await?;
         stream.write_all(data).await?;
         Ok(())
     }
 
-    /// Receive data from the relay
-    pub async fn recv(&mut self) -> Result<Vec<u8>> {
+    /// Receive data from relay, returns (msg_type, payload)
+    pub async fn recv_typed(&mut self) -> Result<(u8, Vec<u8>)> {
         let stream = self.stream.as_mut()
             .ok_or_else(|| anyhow::anyhow!("Relay not connected"))?;
-        // Read 4-byte length prefix
         let mut len_buf = [0u8; 4];
         stream.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-        // Read payload
-        let mut data = vec![0u8; len];
-        stream.read_exact(&mut data).await?;
-        Ok(data)
+        let total_len = u32::from_be_bytes(len_buf) as usize;
+        let mut buf = vec![0u8; total_len];
+        stream.read_exact(&mut buf).await?;
+        let msg_type = buf[0];
+        let payload_len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+        let payload = buf[5..5+payload_len].to_vec();
+        Ok((msg_type, payload))
     }
 
     pub fn is_connected(&self) -> bool {
