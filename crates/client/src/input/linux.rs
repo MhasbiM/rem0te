@@ -4,19 +4,12 @@ use std::sync::Mutex;
 use anyhow::Result;
 
 #[cfg(feature = "x11-capture")]
-use {x11rb::connection::Connection, x11rb::protocol::xtest::ConnectionExt as _,
-     x11rb::protocol::xproto::ConnectionExt, x11rb::rust_connection::RustConnection};
-
-use super::InputImpl;
-
-//! Linux input via X11 XTest (x11rb).
-
-use std::sync::Mutex;
-use anyhow::Result;
-
-#[cfg(feature = "x11-capture")]
-use {x11rb::connection::Connection, x11rb::protocol::xtest::ConnectionExt as _,
-     x11rb::protocol::xproto::ConnectionExt, x11rb::rust_connection::RustConnection};
+use {
+    x11rb::connection::Connection,
+    x11rb::protocol::xtest::ConnectionExt as _,
+    x11rb::protocol::xproto::ConnectionExt,
+    x11rb::rust_connection::RustConnection,
+};
 
 use super::InputImpl;
 
@@ -55,60 +48,64 @@ impl LinuxInput {
         #[cfg(not(feature = "x11-capture"))]
         Ok(Self {})
     }
-}
 
-macro_rules! with_state {
-    // When x11-capture is enabled, lock and use the connection
-    ($self:expr, $body:block) => {
-        #[cfg(feature = "x11-capture")]
-        if let Some(ref state) = $self.state {
-            let c = state.lock().unwrap();
-            $body
-        }
-    };
+    #[cfg(feature = "x11-capture")]
+    fn with_conn<F, R>(&self, f: F) -> Option<R>
+    where F: FnOnce(&InputState) -> R
+    {
+        self.state.as_ref().map(|s| f(&s.lock().unwrap()))
+    }
 }
 
 impl InputImpl for LinuxInput {
     fn send_key_event(&self, key_code: u16, pressed: bool) -> Result<()> {
-        with_state!(self, {
-            if let Some(xc) = dom_to_x11_keycode(key_code) {
+        #[cfg(feature = "x11-capture")]
+        if let Some(xc) = dom_to_x11_keycode(key_code) {
+            self.with_conn(|s| {
                 let t = if pressed { x11rb::protocol::xproto::KEY_PRESS_EVENT }
                         else { x11rb::protocol::xproto::KEY_RELEASE_EVENT };
-                c.conn.xtest_fake_input(t, xc, 0, 0, 0, 0, 0)?;
-                c.conn.flush()?;
-            }
-        });
+                let _ = s.conn.xtest_fake_input(t, xc, 0, 0, 0, 0, 0);
+                let _ = s.conn.flush();
+            });
+        }
         Ok(())
     }
 
     fn send_mouse_move(&self, x: f64, y: f64) -> Result<()> {
-        with_state!(self, {
-            c.conn.warp_pointer(x11rb::NONE, c.root, 0, 0, 0, 0, x as i16, y as i16)?;
-            c.conn.flush()?;
+        #[cfg(feature = "x11-capture")]
+        self.with_conn(|s| {
+            let _ = s.conn.warp_pointer(x11rb::NONE, s.root, 0, 0, 0, 0, x as i16, y as i16);
+            let _ = s.conn.flush();
         });
         Ok(())
     }
 
     fn send_mouse_button(&self, button: u8, pressed: bool) -> Result<()> {
-        with_state!(self, {
+        #[cfg(feature = "x11-capture")]
+        {
             let b = match button { 0 => 1, 1 => 3, 2 => 2, _ => return Ok(()) };
-            let t = if pressed { x11rb::protocol::xproto::BUTTON_PRESS_EVENT }
-                    else { x11rb::protocol::xproto::BUTTON_RELEASE_EVENT };
-            c.conn.xtest_fake_input(t, b, 0, 0, 0, 0, 0)?;
-            c.conn.flush()?;
-        });
+            self.with_conn(|s| {
+                let t = if pressed { x11rb::protocol::xproto::BUTTON_PRESS_EVENT }
+                        else { x11rb::protocol::xproto::BUTTON_RELEASE_EVENT };
+                let _ = s.conn.xtest_fake_input(t, b, 0, 0, 0, 0, 0);
+                let _ = s.conn.flush();
+            });
+        }
         Ok(())
     }
 
     fn send_mouse_scroll(&self, _dx: f64, dy: f64) -> Result<()> {
-        with_state!(self, {
+        #[cfg(feature = "x11-capture")]
+        {
             let b = if dy > 0.0 { 5u8 } else { 4u8 };
-            for _ in 0..((dy.abs() / 50.0).ceil() as usize).max(1) {
-                c.conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, b, 0, 0, 0, 0, 0)?;
-                c.conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, b, 0, 0, 0, 0, 0)?;
-            }
-            c.conn.flush()?;
-        });
+            self.with_conn(|s| {
+                for _ in 0..((dy.abs() / 50.0).ceil() as usize).max(1) {
+                    let _ = s.conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, b, 0, 0, 0, 0, 0);
+                    let _ = s.conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, b, 0, 0, 0, 0, 0);
+                }
+                let _ = s.conn.flush();
+            });
+        }
         Ok(())
     }
 }
@@ -148,9 +145,6 @@ fn dom_to_x11_keycode(code: u16) -> Option<u8> {
         190 => Some(60), 191 => Some(61), 192 => Some(49),
         219 => Some(34), 220 => Some(51), 221 => Some(35), 222 => Some(48),
 
-        _ => {
-            tracing::debug!("unmapped keycode: {code}");
-            None
-        }
+        _ => { tracing::debug!("unmapped keycode: {code}"); None }
     }
 }
