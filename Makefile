@@ -25,7 +25,7 @@ client-install:
 	cd client && bun install
 
 client-dev:
-	cd client && cargo tauri dev
+	cd client && bun tauri dev
 
 client-build-macos:
 	cd client && cargo tauri build --target aarch64-apple-darwin

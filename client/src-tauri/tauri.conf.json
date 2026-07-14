@@ -47,7 +47,7 @@
       "open": true
     },
     "fs": {
-      "scope": ["**"]
+      "requireLiteralLeadingDot": false
     }
   }
 }
