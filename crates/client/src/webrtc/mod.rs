@@ -87,7 +87,23 @@ impl WebRtcManager {
 
         // ── Create media engine ───────────────────────────────────
         let mut media_engine = webrtc::api::media_engine::MediaEngine::default();
-        media_engine.register_default_codecs()?;
+        // ONLY register the codec we actually encode — AV1.
+        // Using register_default_codecs() would register VP8/VP9/H264 too,
+        // which could cause codec mismatch (negotiate VP8, send AV1 → black).
+        media_engine.register_codec(
+            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecParameters {
+                capability: webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                    mime_type: webrtc::api::media_engine::MIME_TYPE_AV1.to_owned(),
+                    clock_rate: 90_000,
+                    channels: 0,
+                    sdp_fmtp_line: String::new(),
+                    rtcp_feedback: vec![],
+                },
+                payload_type: 0,
+                stats_id: String::new(),
+            },
+            webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Video,
+        )?;
 
         // ── Create API ────────────────────────────────────────────
         let api = APIBuilder::new()

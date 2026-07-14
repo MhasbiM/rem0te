@@ -69,8 +69,25 @@ export function useWebRTC(
     // ── Connection state ────────────────────────────────────────
     pc.onconnectionstatechange = () => {
       console.log('[webrtc] connection state:', pc?.connectionState)
+      if (pc?.connectionState === 'connected') {
+        // ICE + DTLS established — media may start flowing
+        if (!connected.value) {
+          console.log('[webrtc] connection established, waiting for video track...')
+        }
+      }
       if (pc?.connectionState === 'failed' || pc?.connectionState === 'disconnected') {
         connected.value = false
+      }
+    }
+
+    // ── ICE connection state (more granular) ───────────────────
+    pc.oniceconnectionstatechange = () => {
+      console.log('[webrtc] ICE connection state:', pc?.iceConnectionState)
+      if (pc?.iceConnectionState === 'connected' || pc?.iceConnectionState === 'completed') {
+        if (!connected.value) {
+          connected.value = true
+          console.log('[webrtc] ICE connected')
+        }
       }
     }
 
@@ -78,6 +95,12 @@ export function useWebRTC(
     inputChannel = pc.createDataChannel('input', {
       ordered: true,
     })
+
+    // ── Declare video receiver (recvonly) ──────────────────────
+    // CRITICAL: must add a video transceiver before createOffer so the
+    // SDP offer includes a video m-line. Without this, the agent's video
+    // track has nowhere to attach and ontrack never fires.
+    pc.addTransceiver('video', { direction: 'recvonly' })
 
     inputChannel.onopen = () => {
       console.log('[webrtc] input channel open — flushing', pendingInputEvents.length, 'pending events')

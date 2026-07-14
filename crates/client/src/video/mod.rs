@@ -117,7 +117,9 @@ impl Av1Encoder {
             ctx,
             width,
             height,
-            frames_since_key: 0,
+            // Start at keyframe_interval so the FIRST frame is always a keyframe.
+            // Browser decoders cannot start decoding without a keyframe first.
+            frames_since_key: (fps * 2) as u64,
             keyframe_interval: (fps * 2) as u64,
         })
     }
@@ -164,28 +166,41 @@ impl Av1Encoder {
             .send_frame((frame, params))
             .context("failed to send frame to AV1 encoder")?;
 
-        // Receive encoded packet
-        match self.ctx.receive_packet() {
-            Ok(packet) => {
-                let is_key = packet.frame_type == FrameType::KEY;
-                debug!(
-                    "AV1: {} bytes, key={}, type={:?}",
-                    packet.data.len(),
-                    is_key,
-                    packet.frame_type,
-                );
-                Ok(Some(EncodedFrame {
-                    data: packet.data.to_vec(),
-                    keyframe: is_key,
-                }))
-            }
-            Err(EncoderStatus::NeedMoreData) => {
-                // Normal for first frames — encoder builds lookahead
-                Ok(None)
-            }
-            Err(e) => {
-                warn!("AV1 receive_packet error: {:?}", e);
-                Ok(None)
+        // Receive all available encoded packets.
+        // Must loop because receive_packet() can return:
+        // - Ok(packet): frame ready → keep looping (multiple may be queued)
+        // - Err(NeedMoreData): no more output for now → stop
+        // - Err(Encoded): frame encoded internally but not emitted → keep trying
+        loop {
+            match self.ctx.receive_packet() {
+                Ok(packet) => {
+                    let is_key = packet.frame_type == FrameType::KEY;
+                    debug!(
+                        "AV1: {} bytes, key={}, type={:?}",
+                        packet.data.len(),
+                        is_key,
+                        packet.frame_type,
+                    );
+                    return Ok(Some(EncodedFrame {
+                        data: packet.data.to_vec(),
+                        keyframe: is_key,
+                    }));
+                }
+                Err(EncoderStatus::NeedMoreData) => {
+                    // No packet ready — need more input frames
+                    return Ok(None);
+                }
+                Err(EncoderStatus::Encoded) => {
+                    // Frame was encoded but not emitted yet — keep trying
+                    continue;
+                }
+                Err(EncoderStatus::LimitReached) => {
+                    return Ok(None);
+                }
+                Err(e) => {
+                    warn!("AV1 receive_packet error: {:?}", e);
+                    return Ok(None);
+                }
             }
         }
     }
