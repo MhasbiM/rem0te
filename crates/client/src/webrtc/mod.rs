@@ -318,13 +318,41 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
         src_img
     };
 
-    // JPEG encode
+    // Fast JPEG: use system cjpeg (libjpeg-turbo SIMD) if available, fallback to image crate
     let mut jpeg_bytes = Vec::new();
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, JPEG_QUALITY);
-    encoder.encode(&img, out_w, out_h, image::ColorType::Rgb8.into())?;
+    match encode_jpeg_fast(&img, out_w, out_h) {
+        Ok(bytes) => jpeg_bytes = bytes,
+        Err(_) => {
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, JPEG_QUALITY);
+            encoder.encode(&img, out_w, out_h, image::ColorType::Rgb8.into())?;
+        }
+    }
 
     debug!("frame {}x{}→{}x{} JPEG {} bytes", frame.width, frame.height, out_w, out_h, jpeg_bytes.len());
     Ok(jpeg_bytes)
+}
+
+/// Fast JPEG encode using system `cjpeg` (libjpeg-turbo) via PPM pipe.
+/// Falls back to `image` crate encoder if cjpeg not available.
+fn encode_jpeg_fast(img: &image::RgbImage, w: u32, h: u32) -> Result<Vec<u8>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("cjpeg")
+        .args(["-quality", &JPEG_QUALITY.to_string(), "-outfile", "/dev/stdout"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("cjpeg not found — install: sudo apt install libjpeg-turbo-progs")?;
+
+    let mut stdin = child.stdin.take().unwrap();
+    write!(stdin, "P6\n{} {}\n255\n", w, h)?;
+    stdin.write_all(img.as_raw())?;
+    drop(stdin);
+
+    let output = child.wait_with_output()?;
+    Ok(output.stdout)
 }
 
 // ---------------------------------------------------------------------------
