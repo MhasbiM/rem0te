@@ -36,14 +36,14 @@ use crate::input::InputEngine;
 /// Max chunk size for data channel (must be < 64KB SCTP limit).
 const CHUNK_SIZE: usize = 60_000;
 
-/// JPEG quality: balance smoothness vs quality. Lower = faster encoding.
-const JPEG_QUALITY: u8 = 60;
+/// JPEG quality. Higher = better.
+const JPEG_QUALITY: u8 = 68;
 
-/// Max width before downscaling. Smaller = faster capture, smoother FPS.
-const MAX_FRAME_WIDTH: u32 = 1280;
+/// Max width. Full HD for sharp image.
+const MAX_FRAME_WIDTH: u32 = 1920;
 
-/// Target frames per second.
-const STREAM_FPS: u32 = 15;
+/// Target FPS. X11 GetImage is the bottleneck (~100-130ms per frame).
+const STREAM_FPS: u32 = 12;
 
 /// Manages a WebRTC session for one remote viewer.
 pub struct WebRtcManager {
@@ -326,112 +326,41 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
     Ok(jpeg_bytes)
 }
 
-/// Draw a smooth, professional-looking arrow cursor.
-/// 32x48 arrow with anti-aliased edges (grayscale border pixels).
+/// Draw a clean arrow cursor using geometric lines.
+/// White arrow with 1px black outline, 16x24 pixels.
 fn draw_cursor(rgb: &mut [u8], width: u32, height: u32, cx: u32, cy: u32) {
-    // 32x48 smooth arrow (4 = opaque, 3..1 = edge blending to black, 0 = transparent)
-    #[rustfmt::skip]
-    let shape: [[u8; 32]; 48] = [
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,3,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,3,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,3,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,4,4,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [4,0,4,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,4,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,4,4,4,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,4,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,3,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0],
-        [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-    ];
+    let white = [255u8, 255, 255];
+    let black = [0u8, 0, 0];
 
-    let white: [u8; 3] = [255, 255, 255];
-    let black: [u8; 3] = [0, 0, 0];
-
-    for row in 0..48u32 {
-        for col in 0..32u32 {
-            let v = shape[row as usize][col as usize];
-            if v == 0 { continue; }
-
-            let px = cx as i32 + col as i32;
-            let py = cy as i32 + row as i32;
-            if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height { continue; }
-
+    // Helper: set pixel if in bounds
+    let mut set = |px: i32, py: i32, color: &[u8; 3]| {
+        if px >= 0 && py >= 0 && (px as u32) < width && (py as u32) < height {
             let idx = ((py as u32) * width + (px as u32)) as usize * 3;
-            if idx + 2 >= rgb.len() { continue; }
+            if idx + 2 < rgb.len() {
+                rgb[idx] = color[0]; rgb[idx + 1] = color[1]; rgb[idx + 2] = color[2];
+            }
+        }
+    };
 
-            // Blend: 4=opaque white, 3=75% white, 2=50%, 1=25% (edge anti-aliasing)
-            let w = v as f32 / 4.0;
-            let bg_r = rgb[idx] as f32;
-            let bg_g = rgb[idx + 1] as f32;
-            let bg_b = rgb[idx + 2] as f32;
+    let cx = cx as i32;
+    let cy = cy as i32;
 
-            rgb[idx]     = (white[0] as f32 * w + bg_r * (1.0 - w)) as u8;
-            rgb[idx + 1] = (white[1] as f32 * w + bg_g * (1.0 - w)) as u8;
-            rgb[idx + 2] = (white[2] as f32 * w + bg_b * (1.0 - w)) as u8;
+    // Outline: draw black 1px border around the arrow shape
+    for dy in -1..=1i32 {
+        for dx in -1..=1i32 {
+            // Diagonal edge (top-left to middle-right)
+            for i in 0..=14 { set(cx + i + dx, cy + i + dy, &black); }
+            // Vertical stem
+            for i in 5..=22 { set(cx + 7 + dx, cy + i + dy, &black); }
+            // Horizontal bar at bottom
+            for i in 0..=7 { set(cx + i + dx, cy + 18 + dy, &black); }
         }
     }
 
-    // Draw thin black outline around the entire arrow
-    for row in 0..48u32 {
-        for col in 0..32u32 {
-            if shape[row as usize][col as usize] == 0 { continue; }
-            // Check if any neighbor is 0 (border)
-            let has_empty_neighbor =
-                (col == 0 || shape[row as usize][col as usize - 1] == 0) ||
-                (col == 31 || shape[row as usize][col as usize + 1] == 0) ||
-                (row == 0 || shape[row as usize - 1][col as usize] == 0) ||
-                (row == 47 || shape[row as usize + 1][col as usize] == 0);
-
-            if !has_empty_neighbor { continue; }
-
-            let px = cx as i32 + col as i32;
-            let py = cy as i32 + row as i32;
-            if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height { continue; }
-            let idx = ((py as u32) * width + (px as u32)) as usize * 3;
-            if idx + 2 >= rgb.len() { continue; }
-            rgb[idx] = black[0];
-            rgb[idx + 1] = black[1];
-            rgb[idx + 2] = black[2];
-        }
-    }
+    // Fill: draw white interior
+    for i in 1..=13 { set(cx + i, cy + i, &white); }
+    for i in 6..=21 { set(cx + 7, cy + i, &white); }
+    for i in 1..=6  { set(cx + i, cy + 18, &white); }
 }
 
 // ---------------------------------------------------------------------------
