@@ -219,7 +219,7 @@ impl ScreenCapture {
         {
             let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
             comp.set_size(sw as usize, sh as usize);
-            comp.set_quality(30.0);
+            comp.set_quality(50.0);
             comp.set_fastest_defaults();
             let mut comp = comp.start_compress(&mut jpeg)?;
             comp.write_scanlines(&rgb)?;

@@ -68,9 +68,9 @@ async fn start_viewing(
                 let msg_type = buf[0];
                 if msg_type == relay_client::MSG_FRAME {
                     let plen = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-                    let payload = buf[5..(5+plen).min(buf.len())].to_vec();
-                    // Emit raw binary (no base64!)
-                    let _ = app.emit("remote-frame", payload);
+                    let payload = &buf[5..(5+plen).min(buf.len())];
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+                    let _ = app.emit("remote-frame", b64);
                 }
             } else {
                 break;

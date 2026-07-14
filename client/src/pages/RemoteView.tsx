@@ -26,16 +26,9 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
 
   // Listen for incoming frames from Tauri backend
   useEffect(() => {
-    const unlisten = listen<number[]>('remote-frame', (event) => {
-      // Raw binary JPEG bytes as number array → Blob URL
-      const bytes = new Uint8Array(event.payload);
-      const blob = new Blob([bytes], { type: 'image/jpeg' });
-      const url = URL.createObjectURL(blob);
-      
-      // Revoke old URL to free memory
-      const oldUrl = frameData?.startsWith('blob:') ? frameData : null;
-      setFrameData(url);
-      if (oldUrl) URL.revokeObjectURL(oldUrl);
+    const unlisten = listen<string>('remote-frame', (event) => {
+      // base64 from Rust → data URL (fast, no Blob overhead)
+      setFrameData(`data:image/jpeg;base64,${event.payload}`);
 
       frameCountRef.current++;
       const now = Date.now();
