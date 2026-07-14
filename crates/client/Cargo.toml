@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
-# Enable on real Linux for PipeWire/GStreamer capture + evdev input.
-# Requires: libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libglib2.0-dev
+default = ["x11-capture"]
+# GStreamer/PipeWire capture for Wayland (needs system libs)
 linux-media = ["gstreamer", "gstreamer-app", "gstreamer-video", "ashpd", "evdev"]
+# X11 screen capture (pure Rust, works on Ubuntu 22 default X11)
+x11-capture = ["x11rb"]
 
 [dependencies]
 rem0te-shared = { path = "../shared" }
@@ -53,13 +54,15 @@ bytes = "1"
 # ---------------------------------------------------------------------------
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# All Linux deps are optional — enable with: cargo build --features linux-media
-# Install system libs first: sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libglib2.0-dev pkg-config
+# GStreamer (optional, for Wayland PipeWire capture)
 gstreamer = { version = "0.23", optional = true }
 gstreamer-app = { version = "0.23", optional = true }
 gstreamer-video = { version = "0.23", optional = true }
 ashpd = { version = "0.10", features = ["tokio", "pipewire"], optional = true }
 evdev = { version = "0.12", optional = true }
+
+# X11 capture (pure Rust, no system deps needed)
+x11rb = { version = "0.13", optional = true, features = ["allow-unsafe-code"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CoreGraphics for screen capture & input
