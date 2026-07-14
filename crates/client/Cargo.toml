@@ -1,0 +1,69 @@
+[package]
+name = "rem0te-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rem0te-shared = { path = "../shared" }
+
+# Async runtime
+tokio.workspace = true
+
+# WebSocket client for signaling
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+
+# WebRTC
+webrtc = "0.11"
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Identifiers
+uuid.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# System info
+hostname = "0.4"
+
+# Image processing
+image = "0.25"
+bytes = "1"
+
+# ---------------------------------------------------------------------------
+# Platform-specific dependencies
+# ---------------------------------------------------------------------------
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# PipeWire screen capture (via GStreamer or direct)
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+gstreamer-video = "0.23"
+
+# xdg-desktop-portal for screen capture permission
+ashpd = { version = "0.10", features = ["tokio", "pipewire"] }
+
+# Input on Linux
+evdev = "0.12"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# CoreGraphics for screen capture & input
+core-graphics = { version = "0.24", features = ["highsierra", "elcapitan"] }
+core-foundation = "0.10"
+
+# Optional: ScreenCaptureKit via objc bindings
+objc2 = "0.5"
+objc2-foundation = "0.2"
+block2 = "0.5"
