@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
-  X, Maximize2, Minimize2, Monitor, Keyboard, MousePointer,
+  X, Maximize2, Minimize2, Monitor,
 } from 'lucide-react';
 
 interface ConnectionInfo {
@@ -80,50 +80,6 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
         </div>
 
         <div className="flex-1" />
-
-        {/* Quality selector */}
-        <select
-          value={quality}
-          onChange={(e) => setQuality(e.target.value as any)}
-          className="bg-dark-800 border border-dark-700 rounded px-2 py-1 text-xs text-white"
-        >
-          <option value="low">Low Quality</option>
-          <option value="medium">Medium</option>
-          <option value="high">High Quality</option>
-        </select>
-
-        {/* View mode */}
-        <select
-          value={viewMode}
-          onChange={(e) => setViewMode(e.target.value as any)}
-          className="bg-dark-800 border border-dark-700 rounded px-2 py-1 text-xs text-white"
-        >
-          <option value="fit">Fit</option>
-          <option value="original">Original</option>
-          <option value="stretch">Stretch</option>
-        </select>
-
-        {/* Actions */}
-        <button
-          className="p-1.5 text-dark-200 hover:text-white hover:bg-dark-800 rounded transition-colors"
-          title="Send Ctrl+Alt+Del"
-        >
-          <Keyboard className="w-4 h-4" />
-        </button>
-        <button
-          className="p-1.5 text-dark-200 hover:text-white hover:bg-dark-800 rounded transition-colors"
-          title="Toggle mouse mode"
-        >
-          <MousePointer className="w-4 h-4" />
-        </button>
-        <button
-          className="p-1.5 text-dark-200 hover:text-white hover:bg-dark-800 rounded transition-colors"
-          title="Clipboard sync"
-        >
-          <Clipboard className="w-4 h-4" />
-        </button>
-
-        <div className="w-px h-6 bg-dark-700 mx-1" />
 
         <button
           onClick={handleFullscreen}
