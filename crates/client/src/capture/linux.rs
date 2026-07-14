@@ -5,7 +5,7 @@
 //! 2. **Wayland** (future): PipeWire + GStreamer (`linux-media` feature)
 //! 3. **Fallback**: blank frames (allows client to run, just no video)
 
-use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 
@@ -15,16 +15,7 @@ pub struct LinuxCapture {
     display_width: u32,
     display_height: u32,
     /// Whether X11 capture was successfully initialized.
-    x11_available: Cell<bool>,
-    /// Cached X11 display name for reconnection each frame.
-    x11_display: Option<String>,
-}
-
-pub struct LinuxCapture {
-    display_width: u32,
-    display_height: u32,
-    /// Whether X11 capture was successfully initialized.
-    x11_available: bool,
+    x11_available: AtomicBool,
     /// Cached X11 display name for reconnection each frame.
     x11_display: Option<String>,
 }
@@ -42,7 +33,7 @@ impl LinuxCapture {
             return Ok(Self {
                 display_width: w,
                 display_height: h,
-                x11_available: Cell::new(false),
+                x11_available: AtomicBool::new(false),
                 x11_display: None,
             });
         }
@@ -58,7 +49,7 @@ impl LinuxCapture {
         Ok(Self {
             display_width: w,
             display_height: h,
-            x11_available: Cell::new(display.is_some() && cfg!(feature = "x11-capture")),
+            x11_available: AtomicBool::new(display.is_some() && cfg!(feature = "x11-capture")),
             x11_display: display,
         })
     }
@@ -75,12 +66,12 @@ impl CaptureImpl for LinuxCapture {
     }
 
     fn capture_frame(&self) -> Result<CapturedFrame> {
-        if self.x11_available.get() {
+        if self.x11_available.load(Ordering::Relaxed) {
             match capture_x11(self.x11_display.as_deref()) {
                 Ok(frame) => return Ok(frame),
                 Err(e) => {
                     tracing::warn!("X11 capture failed, falling back to blank: {e}");
-                    self.x11_available.set(false);
+                    self.x11_available.store(false, Ordering::Relaxed);
                 }
             }
         }
