@@ -208,13 +208,16 @@ async fn send_input_event(
     let payload = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
     let total_len = (1 + 4 + payload.len()) as u32;
     let mut writer_opt = state.relay_writer.lock().await;
-    if let Some(ref mut w) = *writer_opt {
-        w.write_all(&total_len.to_be_bytes()).await.map_err(|e| e.to_string())?;
-        w.write_all(&[relay_client::MSG_INPUT]).await.map_err(|e| e.to_string())?;
-        w.write_all(&(payload.len() as u32).to_be_bytes()).await.map_err(|e| e.to_string())?;
-        w.write_all(&payload).await.map_err(|e| e.to_string())?;
+    match &mut *writer_opt {
+        Some(w) => {
+            w.write_all(&total_len.to_be_bytes()).await.map_err(|e| e.to_string())?;
+            w.write_all(&[relay_client::MSG_INPUT]).await.map_err(|e| e.to_string())?;
+            w.write_all(&(payload.len() as u32).to_be_bytes()).await.map_err(|e| e.to_string())?;
+            w.write_all(&payload).await.map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        None => Err("Relay not connected".to_string())
     }
-    Ok(())
 }
 
 /// Simulate keyboard/mouse input on target using xdotool CLI

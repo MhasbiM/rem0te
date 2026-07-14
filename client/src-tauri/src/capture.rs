@@ -188,7 +188,6 @@ impl ScreenCapture {
 
     #[cfg(target_os = "linux")]
     fn capture_x11(&mut self) -> Result<Vec<u8>> {
-        use image::ImageEncoder;
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::*;
 
@@ -207,13 +206,20 @@ impl ScreenCapture {
             .reply()?
             .data;
 
-        // 50% downscale + BGRA→RGB + JPEG quality 15 (fast, small)
-        let (sw, sh) = (w / 2, h / 2);
-        let rgb = bgra_to_rgb_scaled(&raw, w, h, sw, sh);
+        // BGRA → RGB (full resolution)
+        let rgb = bgra_to_rgb(&raw, w, h);
 
+        // mozjpeg: SIMD-accelerated JPEG encoding (~5-10x faster than image crate)
         let mut jpeg = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 15);
-        encoder.write_image(&rgb, sw, sh, image::ExtendedColorType::Rgb8)?;
+        {
+            let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
+            comp.set_size(w as usize, h as usize);
+            comp.set_quality(30.0);
+            comp.set_fastest(true); // prioritize speed
+            let mut comp = comp.start_compress(&mut jpeg)?;
+            comp.write_scanlines(&rgb)?;
+            comp.finish()?;
+        }
         self.last_frame = jpeg.clone();
         Ok(jpeg)
     }
