@@ -42,7 +42,7 @@ impl InputImpl for LinuxInput {
             let c = self.conn.lock().unwrap();
             let t = if pressed { x11rb::protocol::xproto::KEY_PRESS_EVENT }
                     else { x11rb::protocol::xproto::KEY_RELEASE_EVENT };
-            c.xtest_fake_input(t, xc as u32, 0, 0, 0, 0)?;
+            c.xtest_fake_input(t, xc, 0, 0, 0, 0, 0)?;
             c.flush()?;
         }
         Ok(())
@@ -65,7 +65,7 @@ impl InputImpl for LinuxInput {
             let b = match button { 0 => 1, 1 => 3, 2 => 2, _ => return Ok(()) };
             let t = if pressed { x11rb::protocol::xproto::BUTTON_PRESS_EVENT }
                     else { x11rb::protocol::xproto::BUTTON_RELEASE_EVENT };
-            c.xtest_fake_input(t, b, 0, 0, 0, 0)?;
+            c.xtest_fake_input(t, b, 0, 0, 0, 0, 0)?;
             c.flush()?;
         }
         Ok(())
@@ -77,8 +77,8 @@ impl InputImpl for LinuxInput {
             let c = self.conn.lock().unwrap();
             let b = if dy > 0.0 { 5u8 } else { 4u8 };
             for _ in 0..((dy.abs() / 50.0).ceil() as usize).max(1) {
-                c.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, b as u32, 0, 0, 0, 0)?;
-                c.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, b as u32, 0, 0, 0, 0)?;
+                c.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, b, 0, 0, 0, 0, 0)?;
+                c.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, b, 0, 0, 0, 0, 0)?;
             }
             c.flush()?;
         }
