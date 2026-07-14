@@ -124,7 +124,7 @@ impl CaptureImpl for LinuxCapture {
             let screen = &conn.setup().roots[self.x11_screen_num];
             let root = screen.root;
 
-            let reply = conn.query_pointer(root)?.reply().ok()?;
+            let reply = conn.query_pointer(root).ok()?.reply().ok()?;
             if reply.same_screen {
                 return Some(CursorPosition {
                     x: reply.root_x as u32,
