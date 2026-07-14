@@ -22,6 +22,7 @@ export function useWebRTC(
 
   // Revoke old blob URLs to prevent memory leaks
   let lastObjectUrl: string | null = null
+  const pendingInputEvents: SignalingMessage[] = []
 
   const iceServers: RTCConfiguration = {
     iceServers: [
@@ -151,7 +152,11 @@ export function useWebRTC(
     })
 
     inputChannel.onopen = () => {
-      console.log('[webrtc] input channel open')
+      console.log('[webrtc] input channel open — flushing', pendingInputEvents.length, 'pending events')
+      for (const ev of pendingInputEvents) {
+        inputChannel!.send(JSON.stringify(ev))
+      }
+      pendingInputEvents.length = 0
     }
 
     inputChannel.onclose = () => {
@@ -172,6 +177,7 @@ export function useWebRTC(
 
   function disconnect() {
     inputChannel?.close()
+    pendingInputEvents.length = 0
     if (lastObjectUrl) {
       URL.revokeObjectURL(lastObjectUrl)
       lastObjectUrl = null
@@ -187,6 +193,12 @@ export function useWebRTC(
   function sendInputEvent(event: SignalingMessage) {
     if (inputChannel && inputChannel.readyState === 'open') {
       inputChannel.send(JSON.stringify(event))
+    } else {
+      // Channel not open yet — queue for later
+      pendingInputEvents.push(event)
+      if (pendingInputEvents.length === 1) {
+        console.log('[webrtc] input channel not open, queueing events')
+      }
     }
   }
 

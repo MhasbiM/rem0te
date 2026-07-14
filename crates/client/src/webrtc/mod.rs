@@ -347,6 +347,7 @@ fn split_into_chunks(frame_id: u32, data: &[u8]) -> Vec<Vec<u8>> {
 async fn handle_input_message(msg: DataChannelMessage, input: &InputEngine) {
     if msg.is_string {
         if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
+            tracing::info!("input received: {}", &text[..text.len().min(80)]);
             if let Ok(event) = serde_json::from_str::<SignalingMessage>(&text) {
                 match event {
                     SignalingMessage::KeyEvent {
