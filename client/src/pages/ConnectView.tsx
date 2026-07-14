@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Monitor,
   Wifi,
@@ -119,8 +120,28 @@ export default function ConnectView({ onConnected }: Props) {
       case 'ConnectionResponse':
         cancelTimer();
         if (msg.payload.accepted) {
-          const peer = peers.find((p) => p.peer_id === msg.payload.from_peer);
-          onConnected({ peerId: msg.payload.from_peer, hostname: peer?.hostname || 'Remote', os: peer?.os || 'Unknown' });
+          // Viewer (Mac): create relay session then notify target
+          invoke<string>('start_viewing', {
+            serverAddr: serverAddr,
+            peerId: msg.payload.from_peer,
+          }).then((sessionId) => {
+            console.log('[rem0te] Relay session created:', sessionId);
+            // Tell target to join relay
+            wsRef.current?.send(JSON.stringify({
+              type: 'RelayInfo',
+              payload: {
+                relay_host: serverAddr,
+                relay_port: 21117,
+                session_id: sessionId,
+                to_peer: msg.payload.from_peer,
+              },
+            }));
+            const peer = peers.find((p) => p.peer_id === msg.payload.from_peer);
+            onConnected({ peerId: msg.payload.from_peer, hostname: peer?.hostname || 'Remote', os: peer?.os || 'Unknown' });
+          }).catch((err) => {
+            setConnecting(false);
+            setError('Relay connection failed: ' + err);
+          });
         } else {
           setError('Connection rejected by peer');
           setConnecting(false);
@@ -137,6 +158,15 @@ export default function ConnectView({ onConnected }: Props) {
             sdp: null,
           },
         }));
+        break;
+      case 'RelayInfo':
+        // Target (Linux): join relay session and start capturing
+        console.log('[rem0te] Joining relay session:', msg.payload.session_id);
+        invoke('start_serving', {
+          serverAddr: serverAddr,
+          sessionId: msg.payload.session_id,
+          viewerPeer: msg.payload.from_peer || 'viewer',
+        }).catch((err) => console.error('[rem0te] start_serving failed:', err));
         break;
       case 'Error':
         cancelTimer();

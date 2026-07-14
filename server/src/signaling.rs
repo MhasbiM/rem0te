@@ -54,6 +54,7 @@ pub enum SignalingMessage {
         relay_host: String,
         relay_port: u16,
         session_id: String,
+        to_peer: String,
     },
     PeerOnline {
         peer: PeerInfo,
@@ -355,11 +356,28 @@ fn handle_signaling_message(state: &SignalingState, sender_id: &str, msg: Signal
             }
         }
         SignalingMessage::IceCandidate { ref to_peer, .. } => {
+            let target_id = state.peers.iter()
+                .find(|p| p.peer_id == *to_peer && p.online)
+                .map(|p| p.id.clone());
             let json = serde_json::to_string(&msg).unwrap();
-            if let Some(target) = state.ws_connections.get(to_peer) {
-                let _ = target.send(json);
-            } else if let Some(target) = state.tcp_connections.get(to_peer) {
-                let _ = target.0.send(json);
+            if let Some(ref id) = target_id {
+                if let Some(target) = state.ws_connections.get(id) {
+                    let _ = target.send(json);
+                } else if let Some(target) = state.tcp_connections.get(id) {
+                    let _ = target.0.send(json);
+                }
+            }
+        }
+        SignalingMessage::RelayInfo { ref to_peer, .. } => {
+            let target_id = state.peers.iter()
+                .find(|p| p.peer_id == *to_peer && p.online)
+                .map(|p| p.id.clone());
+            log::info!("RelayInfo: to_peer={}, resolved={:?}", to_peer, target_id);
+            let json = serde_json::to_string(&msg).unwrap();
+            if let Some(ref id) = target_id {
+                if let Some(target) = state.ws_connections.get(id) {
+                    let _ = target.send(json);
+                }
             }
         }
         _ => {

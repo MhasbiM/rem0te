@@ -1,14 +1,8 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
-  X,
-  Maximize2,
-  Minimize2,
-  Monitor,
-  Upload,
-  Download,
-  Clipboard,
-  Keyboard,
-  MousePointer,
+  X, Maximize2, Minimize2, Monitor, Keyboard, MousePointer,
 } from 'lucide-react';
 
 interface ConnectionInfo {
@@ -24,9 +18,36 @@ interface Props {
 
 export default function RemoteView({ connection, onDisconnect }: Props) {
   const [fullscreen, setFullscreen] = useState(false);
-  const [quality, setQuality] = useState<'low' | 'medium' | 'high'>('medium');
-  const [viewMode, setViewMode] = useState<'fit' | 'original' | 'stretch'>('fit');
+  const [frameData, setFrameData] = useState<string | null>(null);
+  const [fps, setFps] = useState(0);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const frameCountRef = useRef(0);
+  const lastFpsTime = useRef(Date.now());
+
+  // Listen for incoming frames from Tauri backend
+  useEffect(() => {
+    const unlisten = listen<string>('remote-frame', (event) => {
+      const b64 = event.payload;
+      // Detect if JPEG (starts with /9j/) or PNG (starts with iVBOR)
+      const mime = b64.startsWith('/9j/') ? 'image/jpeg' : 'image/png';
+      setFrameData(`data:${mime};base64,${b64}`);
+
+      frameCountRef.current++;
+      const now = Date.now();
+      if (now - lastFpsTime.current >= 1000) {
+        setFps(frameCountRef.current);
+        frameCountRef.current = 0;
+        lastFpsTime.current = now;
+      }
+    });
+
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
+  const handleDisconnect = () => {
+    invoke('disconnect_session').catch(() => {});
+    onDisconnect();
+  };
 
   const handleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -113,7 +134,7 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
         </button>
 
         <button
-          onClick={onDisconnect}
+          onClick={handleDisconnect}
           className="p-1.5 text-dark-200 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
           title="Disconnect"
         >
@@ -122,46 +143,27 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
       </div>
 
       {/* Remote desktop canvas */}
-      <div
-        ref={canvasRef}
-        className="flex-1 flex items-center justify-center bg-dark-950 p-4"
-      >
-        <div className="bg-dark-900 border-2 border-dashed border-dark-700 rounded-xl w-full h-full flex flex-col items-center justify-center">
-          <Monitor className="w-16 h-16 text-dark-700 mb-4" />
-          <p className="text-dark-200 text-lg font-medium">Connected to {connection.hostname}</p>
-          <p className="text-dark-200 text-sm mt-2">
-            Remote desktop stream will render here via the Tauri Rust backend
-          </p>
-          <div className="mt-4 bg-dark-800 rounded-lg px-4 py-2">
-            <p className="text-xs text-dark-200 font-mono">
-              Peer ID: {connection.peerId}
-            </p>
+      <div ref={canvasRef} className="flex-1 flex items-center justify-center bg-black p-2">
+        {frameData ? (
+          <img
+            src={frameData}
+            alt="Remote desktop"
+            className="max-w-full max-h-full object-contain"
+            style={{ imageRendering: 'auto' }}
+          />
+        ) : (
+          <div className="text-dark-200 text-center">
+            <Monitor className="w-16 h-16 mx-auto mb-3 text-dark-700" />
+            <p>Waiting for frames from {connection.hostname}...</p>
           </div>
-
-          {/* Status indicators */}
-          <div className="flex gap-4 mt-6">
-            <div className="flex items-center gap-2 text-xs">
-              <div className="w-2 h-2 rounded-full bg-green-400" />
-              <span className="text-green-400">Connected</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-              <span className="text-blue-400">Stream: {quality}</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <div className="w-2 h-2 rounded-full bg-dark-200" />
-              <span className="text-dark-200">Latency: --</span>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Status bar */}
       <div className="bg-dark-900 border-t border-dark-700 px-4 py-1.5 flex items-center gap-4 text-xs text-dark-200">
-        <span>Remote: {connection.peerId}</span>
+        <span>Remote: {connection.hostname}</span>
         <span>OS: {connection.os}</span>
-        <span>Resolution: --</span>
-        <span>FPS: --</span>
+        <span>FPS: {fps}</span>
         <span className="ml-auto">rem0te v0.1.0</span>
       </div>
     </div>
