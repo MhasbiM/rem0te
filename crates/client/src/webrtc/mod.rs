@@ -107,21 +107,28 @@ impl WebRtcManager {
         // ── Create peer connection ────────────────────────────────
         let peer_connection = api.new_peer_connection(config).await?;
 
-        // ── Data channel for input events ─────────────────────────
-        let input_dc = peer_connection.create_data_channel("input", None).await?;
-
-        let input_engine_ref: &'static InputEngine = self.input;
-        input_dc.on_message(Box::new(move |msg| {
-            let input = input_engine_ref;
-            Box::pin(handle_input_message(msg, input))
-        }));
-
         // ── Data channel for video frames (JPEG) ──────────────────
+        // Agent creates "video" channel → web client receives via ondatachannel
         let video_dc = peer_connection
             .create_data_channel("video", None)
             .await?;
-
         self.video_dc = Some(video_dc);
+
+        // ── Handle incoming "input" channel from web client ────────
+        // Web client creates "input" channel → agent receives via on_data_channel
+        let input_engine_ref: &'static InputEngine = self.input;
+        peer_connection.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            let input = input_engine_ref;
+            Box::pin(async move {
+                if dc.label() == "input" {
+                    tracing::info!("incoming 'input' data channel — keyboard/mouse enabled");
+                    dc.on_message(Box::new(move |msg| {
+                        let inp = input;
+                        Box::pin(handle_input_message(msg, inp))
+                    }));
+                }
+            })
+        }));
 
         // ── ICE candidate callback ────────────────────────────────
         let signaling = self.signaling_tx.clone();
@@ -145,13 +152,6 @@ impl WebRtcManager {
                 })
             },
         ));
-
-        // Handle incoming data channels from web client
-        peer_connection.on_data_channel(Box::new(move |_dc: Arc<RTCDataChannel>| {
-            Box::pin(async move {
-                debug!("incoming data channel (ignored on agent side)");
-            })
-        }));
 
         self.peer_connection = Some(Arc::new(peer_connection));
 

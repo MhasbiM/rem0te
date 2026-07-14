@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import type { MachineInfo, MachineId, SignalingMessage } from '@/types/protocol'
 
 const props = defineProps<{
@@ -17,6 +17,20 @@ const emit = defineEmits<{
 const containerRef = ref<HTMLDivElement | null>(null)
 const isFullscreen = ref(false)
 
+// Get display dimensions of the connected machine
+const currentMachineInfo = computed(() =>
+  props.machines.find(m => m.machine_id === props.currentMachine)
+)
+const displayW = computed(() => currentMachineInfo.value?.display_width ?? 1920)
+const displayH = computed(() => currentMachineInfo.value?.display_height ?? 1080)
+
+// Auto-focus when connected
+watch(() => props.connected, (val) => {
+  if (val) {
+    nextTick(() => containerRef.value?.focus())
+  }
+})
+
 // ── Input handling ──────────────────────────────────────────────
 
 function getRelativeCoords(clientX: number, clientY: number): { x: number; y: number } {
@@ -31,12 +45,11 @@ function getRelativeCoords(clientX: number, clientY: number): { x: number; y: nu
 function onMouseMove(e: MouseEvent) {
   if (!props.connected) return
   const { x, y } = getRelativeCoords(e.clientX, e.clientY)
-  // Scale to display dimensions (assume 1920x1080 — should come from MachineInfo)
   emit('inputEvent', {
     type: 'mouse_move',
     target: props.currentMachine || '',
-    x: Math.round(x * 1920),
-    y: Math.round(y * 1080),
+    x: Math.round(x * displayW.value),
+    y: Math.round(y * displayH.value),
   } as SignalingMessage)
 }
 
