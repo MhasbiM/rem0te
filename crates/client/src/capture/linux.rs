@@ -118,19 +118,15 @@ impl CaptureImpl for LinuxCapture {
         {
             use x11rb::connection::Connection;
             use x11rb::protocol::xproto::ConnectionExt;
-
             let conn = self.x11_conn.as_ref()?;
             let conn = conn.lock().ok()?;
             let screen = &conn.setup().roots[self.x11_screen_num];
-            let root = screen.root;
-
-            let reply = conn.query_pointer(root).ok()?.reply().ok()?;
-            if reply.same_screen {
-                return Some(CursorPosition {
-                    x: reply.root_x as u32,
-                    y: reply.root_y as u32,
-                });
-            }
+            let reply = conn.query_pointer(screen.root).ok()?.reply().ok()?;
+            tracing::trace!("cursor at ({}, {})", reply.root_x, reply.root_y);
+            return Some(CursorPosition {
+                x: reply.root_x as u32,
+                y: reply.root_y as u32,
+            });
         }
         None
     }

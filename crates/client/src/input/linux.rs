@@ -61,6 +61,7 @@ impl InputImpl for LinuxInput {
     fn send_key_event(&self, key_code: u16, pressed: bool) -> Result<()> {
         #[cfg(feature = "x11-capture")]
         if let Some(xc) = dom_to_x11_keycode(key_code) {
+            tracing::debug!("key DOM={} X11={} {}", key_code, xc, if pressed {"DOWN"} else {"UP"});
             self.with_conn(|s| {
                 let t = if pressed { x11rb::protocol::xproto::KEY_PRESS_EVENT }
                         else { x11rb::protocol::xproto::KEY_RELEASE_EVENT };
@@ -145,6 +146,6 @@ fn dom_to_x11_keycode(code: u16) -> Option<u8> {
         190 => Some(60), 191 => Some(61), 192 => Some(49),
         219 => Some(34), 220 => Some(51), 221 => Some(35), 222 => Some(48),
 
-        _ => { tracing::debug!("unmapped keycode: {code}"); None }
+        _ => { tracing::info!("unmapped DOM keycode: {code} — X11 key unknown"); None }
     }
 }

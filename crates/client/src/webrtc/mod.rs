@@ -302,7 +302,7 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
             debug!("cursor drawn at ({}, {})", cur.x, cur.y);
         }
     } else {
-        debug!("no cursor position available");
+        info!("no cursor position — cursor will not appear on remote");
     }
 
     let src_img = image::RgbImage::from_raw(frame.width, frame.height, rgb)
