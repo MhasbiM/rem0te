@@ -94,6 +94,7 @@ impl ScreenCapture {
     #[cfg(target_os = "linux")]
     fn capture_x11(&mut self) -> Result<Vec<u8>> {
         use image::ImageEncoder;
+        use x11rb::connection::Connection;
         use x11rb::protocol::xproto::*;
         use x11rb::rust_connection::RustConnection;
 
