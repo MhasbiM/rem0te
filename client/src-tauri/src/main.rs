@@ -5,6 +5,7 @@ mod capture;
 mod connection;
 mod file_transfer;
 mod relay_client;
+mod native_viewer;
 
 use anyhow::Context;
 use base64::Engine;
@@ -29,7 +30,7 @@ pub struct AppState {
 #[tauri::command]
 async fn start_viewing(
     state: tauri::State<'_, AppState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     server_addr: String,
     peer_id: String,
 ) -> Result<String, String> {
@@ -47,38 +48,11 @@ async fn start_viewing(
     *state.relay_writer.lock().await = writer;
     *state.relay_reader.lock().await = reader;
 
-    // MJPEG HTTP server channel
-    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
-    
-    // Start MJPEG HTTP server on localhost
-    tokio::spawn(async move {
-        let listener = match tokio::net::TcpListener::bind("127.0.0.1:9876").await {
-            Ok(l) => l,
-            Err(e) => { log::error!("MJPEG bind failed: {}", e); return; }
-        };
-        log::info!("MJPEG stream at http://127.0.0.1:9876/stream");
-        loop {
-            if let Ok((mut socket, _)) = listener.accept().await {
-                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n").await;
-                loop {
-                    match frame_rx.recv().await {
-                        Some(frame) => {
-                            let hdr = format!("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", frame.len());
-                            if socket.write_all(hdr.as_bytes()).await.is_err() { break; }
-                            if socket.write_all(&frame).await.is_err() { break; }
-                            if socket.write_all(b"\r\n").await.is_err() { break; }
-                        }
-                        None => break,
-                    }
-                }
-            }
-        }
-    });
+    // Spawn NATIVE window (zero Tauri IPC for frames!)
+    let frame_tx = native_viewer::spawn_native_viewer(960, 540)
+        .map_err(|e| e.to_string())?;
 
-    // Notify frontend stream is ready
-    let _ = app.emit("stream-ready", "http://127.0.0.1:9876/stream");
-
-    // Relay reader → frame_tx
+    // Relay reader → native viewer (no base64, no JSON, no Tauri IPC)
     let reader_arc = state.relay_reader.clone();
     let manager_arc = state.connection_manager.clone();
     tokio::spawn(async move {
@@ -98,7 +72,8 @@ async fn start_viewing(
                 if buf.len() >= 9 && buf[0] == relay_client::MSG_FRAME {
                     let plen = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
                     let frame = buf[5..(5+plen).min(buf.len())].to_vec();
-                    let _ = frame_tx.try_send(frame); // non-blocking
+                    // Send to native window (zero overhead!)
+                    let _ = frame_tx.send(frame);
                 }
             } else { break; }
         }

@@ -24,6 +24,7 @@ env_logger = { workspace = true }
 base64 = "0.22"
 image = "0.25"
 mozjpeg = "0.10"
+minifb = "0.27"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.23"
