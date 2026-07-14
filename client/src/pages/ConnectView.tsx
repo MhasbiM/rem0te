@@ -182,12 +182,10 @@ export default function ConnectView({ onConnected }: Props) {
         stopServing();
         break;
       case 'InputEvent':
-        // Target receives input from viewer
         if (msg.payload.event) {
           try {
             const evt = JSON.parse(msg.payload.event);
-            console.log('[rem0te] Input received:', evt.type);
-            invoke('send_input_event', {
+            invoke('simulate_input_event', {
               eventType: evt.type || '',
               keyCode: evt.key_code || null,
               x: evt.x || null,

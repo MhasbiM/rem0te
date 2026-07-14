@@ -158,11 +158,12 @@ async fn start_ffmpeg_pipe(
 
     // ffmpeg: capture X11 → MJPEG → pipe stdout
     log::info!("Launching ffmpeg x11grab...");
+    let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
     let mut child = Command::new("ffmpeg")
         .args([
             "-f", "x11grab",
             "-video_size", "1920x1080",
-            "-i", ":0.0",
+            "-i", &display,
             "-f", "mjpeg",
             "-q:v", "8",
             "-r", "15",
@@ -358,6 +359,28 @@ fn key_to_xdotool(code: &str) -> &str {
     }
 }
 
+#[tauri::command]
+async fn simulate_input_event(
+    event_type: String,
+    key_code: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    button: Option<String>,
+) -> Result<(), String> {
+    let event = serde_json::json!({
+        "type": event_type,
+        "key_code": key_code,
+        "x": x,
+        "y": y,
+        "button": button,
+    });
+    #[cfg(target_os = "linux")]
+    simulate_input(&event);
+    #[cfg(not(target_os = "linux"))]
+    let _ = event;
+    Ok(())
+}
+
 fn main() {
     env_logger::init();
 
@@ -379,6 +402,7 @@ fn main() {
             start_serving,
             disconnect_session,
             send_input_event,
+            simulate_input_event,
         ])
         .run(tauri::generate_context!())
         .expect("error while running rem0te client");
