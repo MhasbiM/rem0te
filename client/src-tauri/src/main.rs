@@ -164,6 +164,7 @@ async fn start_serving(
                     let plen = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
                     let payload = &buf[5..(5+plen).min(buf.len())];
                     if let Ok(event) = serde_json::from_slice::<serde_json::Value>(payload) {
+                        log::info!("Input received: {:?}", event);
                         #[cfg(target_os = "linux")]
                         simulate_input(&event);
                     }
