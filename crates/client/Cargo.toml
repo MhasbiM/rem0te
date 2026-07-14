@@ -62,7 +62,7 @@ ashpd = { version = "0.10", features = ["tokio", "pipewire"], optional = true }
 evdev = { version = "0.12", optional = true }
 
 # X11 capture (pure Rust)
-x11rb = { version = "0.13", optional = true, features = ["allow-unsafe-code"] }
+x11rb = { version = "0.13", optional = true, features = ["allow-unsafe-code", "xtest"] }
 
 # Input injection (uses XTest via x11rb — already included)
 
