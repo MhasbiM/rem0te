@@ -10,12 +10,16 @@ use base64::Engine;
 use capture::ScreenCapture;
 use connection::{ConnectionManager, SessionRole};
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Mutex;
 use tauri::{Emitter, Manager};
 
 pub struct AppState {
     pub connection_manager: Arc<Mutex<ConnectionManager>>,
     pub screen_capture: Arc<Mutex<ScreenCapture>>,
+    pub relay_writer: Arc<Mutex<Option<OwnedWriteHalf>>>,
+    pub relay_reader: Arc<Mutex<Option<OwnedReadHalf>>>,
 }
 
 // ── Viewer commands ────────────────────────────────────────────
@@ -34,26 +38,40 @@ async fn start_viewing(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Spawn task to receive frames from relay and emit to frontend
+    // Extract reader/writer from relay
+    let (reader, writer) = {
+        let relay = std::mem::replace(&mut manager.relay, relay_client::RelayClient::new());
+        relay.into_halves()
+    };
+    *state.relay_writer.lock().await = writer;
+    *state.relay_reader.lock().await = reader;
+
+    // Spawn frame receiver task
+    let reader_arc = state.relay_reader.clone();
     let manager_arc = state.connection_manager.clone();
     tokio::spawn(async move {
         loop {
-            let mut mgr = manager_arc.lock().await;
-            if mgr.role != SessionRole::Viewer || !mgr.relay.is_connected() {
-                break;
+            {
+                let mgr = manager_arc.lock().await;
+                if mgr.role != SessionRole::Viewer { break; }
             }
-            match mgr.relay.recv_mut().await {
-                Ok((relay_client::MSG_FRAME, data)) => {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            let mut reader_opt = reader_arc.lock().await;
+            if let Some(ref mut r) = *reader_opt {
+                let mut len_buf = [0u8; 4];
+                if r.read_exact(&mut len_buf).await.is_err() { break; }
+                let total_len = u32::from_be_bytes(len_buf) as usize;
+                let mut buf = vec![0u8; total_len.min(262144)];
+                if r.read_exact(&mut buf).await.is_err() { break; }
+                if buf.len() < 9 { continue; }
+                let msg_type = buf[0];
+                if msg_type == relay_client::MSG_FRAME {
+                    let payload_len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                    let payload = &buf[5..(5+payload_len).min(buf.len())];
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
                     let _ = app.emit("remote-frame", b64);
                 }
-                Ok((relay_client::MSG_INPUT, _data)) => {
-                    // Input events from target not needed on viewer side
-                }
-                Ok(_) => {} // unknown message type
-                Err(_) => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                }
+            } else {
+                break;
             }
         }
     });
@@ -78,46 +96,79 @@ async fn start_serving(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Start screen capture
-    let mut cap = state.screen_capture.lock().await;
-    cap.start().map_err(|e| e.to_string())?;
-    drop(cap);
+    // Extract reader/writer from relay for independent access
+    let (reader, writer) = {
+        let relay = std::mem::replace(&mut manager.relay, relay_client::RelayClient::new());
+        relay.into_halves()
+    };
+    *state.relay_writer.lock().await = writer;
+    *state.relay_reader.lock().await = reader;
 
-    // Single task: capture+send + input receive (no mutex deadlock)
-    let manager_arc = state.connection_manager.clone();
+    // Start screen capture
+    state.screen_capture.lock().await.start().map_err(|e| e.to_string())?;
+
+    // ── Capture + send task (uses relay_writer) ──────────────
+    let writer_arc = state.relay_writer.clone();
     let capture_arc = state.screen_capture.clone();
+    let manager_arc = state.connection_manager.clone();
     tokio::spawn(async move {
         loop {
-            tokio::select! {
-                // ── Capture & send frame ──────────────────────
-                _ = async {
-                    let mut mgr = manager_arc.lock().await;
-                    if mgr.role != SessionRole::Target { return; }
-                    let mut cap = capture_arc.lock().await;
-                    if let Ok(frame) = cap.capture_frame() {
-                        if mgr.relay.send_mut(relay_client::MSG_FRAME, &frame).await.is_err() {
-                            log::info!("Relay send failed, stopping");
-                            mgr.disconnect();
-                            return;
+            {
+                let mgr = manager_arc.lock().await;
+                if mgr.role != SessionRole::Target { break; }
+            }
+            let mut cap = capture_arc.lock().await;
+            match cap.capture_frame() {
+                Ok(frame) => {
+                    let mut writer_opt = writer_arc.lock().await;
+                    if let Some(ref mut w) = *writer_opt {
+                        let total_len = (1 + 4 + frame.len()) as u32;
+                        let mut header = Vec::with_capacity(9);
+                        header.extend_from_slice(&total_len.to_be_bytes());
+                        header.push(relay_client::MSG_FRAME);
+                        header.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+                        if w.write_all(&header).await.is_err()
+                            || w.write_all(&frame).await.is_err()
+                        {
+                            log::info!("Relay write failed, stopping");
+                            break;
                         }
                     }
-                } => {}
-                
-                // ── Receive input ────────────────────────────
-                _ = async {
-                    let mut mgr = manager_arc.lock().await;
-                    if mgr.role != SessionRole::Target || !mgr.relay.is_connected() { return; }
-                    match mgr.relay.recv_mut().await {
-                        Ok((relay_client::MSG_INPUT, data)) => {
-                            if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&data) {
-                                #[cfg(target_os = "linux")]
-                                simulate_input(&event);
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(_) => {}
+                }
+                Err(e) => log::error!("Capture error: {}", e),
+            }
+        }
+    });
+
+    // ── Input receive task (uses relay_reader) ───────────────
+    let reader_arc = state.relay_reader.clone();
+    let manager_arc2 = state.connection_manager.clone();
+    tokio::spawn(async move {
+        loop {
+            {
+                let mgr = manager_arc2.lock().await;
+                if mgr.role != SessionRole::Target { break; }
+            }
+            let mut reader_opt = reader_arc.lock().await;
+            if let Some(ref mut r) = *reader_opt {
+                // Read framed message
+                let mut len_buf = [0u8; 4];
+                if r.read_exact(&mut len_buf).await.is_err() { break; }
+                let total_len = u32::from_be_bytes(len_buf) as usize;
+                let mut buf = vec![0u8; total_len.min(65536)];
+                if r.read_exact(&mut buf).await.is_err() { break; }
+                if buf.is_empty() { continue; }
+                let msg_type = buf[0];
+                if msg_type == relay_client::MSG_INPUT && buf.len() >= 9 {
+                    let payload_len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                    let payload = &buf[5..(5+payload_len).min(buf.len())];
+                    if let Ok(event) = serde_json::from_slice::<serde_json::Value>(payload) {
+                        #[cfg(target_os = "linux")]
+                        simulate_input(&event);
                     }
-                } => {}
+                }
+            } else {
+                break;
             }
         }
     });
@@ -130,9 +181,10 @@ async fn start_serving(
 #[tauri::command]
 async fn disconnect_session(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut manager = state.connection_manager.lock().await;
-    manager.disconnect();
-    let mut capture = state.screen_capture.lock().await;
-    capture.stop().map_err(|e| e.to_string())
+    manager.role = SessionRole::None;
+    *state.relay_writer.lock().await = None;
+    *state.relay_reader.lock().await = None;
+    state.screen_capture.lock().await.stop().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -144,7 +196,6 @@ async fn send_input_event(
     y: Option<f64>,
     button: Option<String>,
 ) -> Result<(), String> {
-    let mut manager = state.connection_manager.lock().await;
     let data = serde_json::json!({
         "type": event_type,
         "key_code": key_code,
@@ -152,8 +203,16 @@ async fn send_input_event(
         "y": y,
         "button": button,
     });
-    let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
-    manager.relay.send_mut(relay_client::MSG_INPUT, &bytes).await.map_err(|e| e.to_string())
+    let payload = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
+    let total_len = (1 + 4 + payload.len()) as u32;
+    let mut writer_opt = state.relay_writer.lock().await;
+    if let Some(ref mut w) = *writer_opt {
+        w.write_all(&total_len.to_be_bytes()).await.map_err(|e| e.to_string())?;
+        w.write_all(&[relay_client::MSG_INPUT]).await.map_err(|e| e.to_string())?;
+        w.write_all(&(payload.len() as u32).to_be_bytes()).await.map_err(|e| e.to_string())?;
+        w.write_all(&payload).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Simulate keyboard/mouse input on target using xdotool CLI
@@ -250,6 +309,8 @@ fn main() {
             app.manage(AppState {
                 connection_manager: Arc::new(Mutex::new(ConnectionManager::new())),
                 screen_capture: Arc::new(Mutex::new(ScreenCapture::new())),
+                relay_writer: Arc::new(Mutex::new(None)),
+                relay_reader: Arc::new(Mutex::new(None)),
             });
             Ok(())
         })

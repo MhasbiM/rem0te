@@ -23,6 +23,12 @@ impl RelayClient {
     pub fn session_id(&self) -> &str { &self.session_id }
     pub fn is_connected(&self) -> bool { self.connected }
 
+    /// Extract reader and writer halves for independent use (breaks RelayClient)
+    pub fn into_halves(mut self) -> (Option<OwnedReadHalf>, Option<OwnedWriteHalf>) {
+        self.connected = false;
+        (self.reader.take(), self.writer.take())
+    }
+
     pub fn disconnect(&mut self) {
         self.reader = None;
         self.writer = None;
