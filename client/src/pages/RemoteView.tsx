@@ -1,5 +1,6 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
   X, Maximize2, Minimize2, Monitor,
 } from 'lucide-react';
@@ -17,8 +18,28 @@ interface Props {
 
 export default function RemoteView({ connection, onDisconnect }: Props) {
   const [fullscreen, setFullscreen] = useState(false);
+  const [frameData, setFrameData] = useState<string | null>(null);
   const [fps, setFps] = useState(0);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const frameCountRef = useRef(0);
+  const lastFpsTime = useRef(Date.now());
+
+  // macOS: listen for Tauri events. Linux: native window handles display.
+  useEffect(() => {
+    const unlisten = listen<string>('remote-frame', (event) => {
+      if (event.payload) {
+        setFrameData(`data:image/jpeg;base64,${event.payload}`);
+        frameCountRef.current++;
+        const now = Date.now();
+        if (now - lastFpsTime.current >= 1000) {
+          setFps(frameCountRef.current);
+          frameCountRef.current = 0;
+          lastFpsTime.current = now;
+        }
+      }
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
 
   const handleDisconnect = () => {
     invoke('disconnect_session').catch(() => {});
@@ -121,17 +142,22 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
       </div>
 
       {/* Remote desktop canvas */}
-      <div ref={canvasRef} className="flex-1 flex items-center justify-center bg-gray-900"
-        onMouseMove={handleMouseMove}
-        onMouseDown={handleMouseDown}
-        onMouseUp={handleMouseUp}
+      <div ref={canvasRef} className="flex-1 flex items-center justify-center bg-black"
+        onMouseMove={handleMouseMove} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
       >
-        <div className="text-center">
-          <Monitor className="w-16 h-16 mx-auto mb-3 text-green-400" />
-          <p className="text-white text-lg font-semibold">Connected to {connection.hostname}</p>
-          <p className="text-gray-400 text-sm mt-1">Remote view → native window</p>
-          <p className="text-gray-500 text-xs mt-3">Use toolbar above to disconnect</p>
-        </div>
+        {frameData ? (
+          <img src={frameData} alt="Remote" className="max-w-full max-h-full object-contain" />
+        ) : (
+          <div className="text-center">
+            <Monitor className="w-16 h-16 mx-auto mb-3 text-green-400" />
+            <p className="text-white text-lg font-semibold">Connected to {connection.hostname}</p>
+            <p className="text-gray-400 text-sm mt-1">
+              {navigator.platform.includes('Linux')
+                ? 'Remote view → native window'
+                : 'Waiting for frames...'}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Status bar */}
