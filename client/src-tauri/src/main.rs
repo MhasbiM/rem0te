@@ -53,7 +53,7 @@ async fn start_viewing(
                 }
                 Ok(_) => {} // unknown message type
                 Err(_) => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                 }
             }
         }
@@ -104,7 +104,8 @@ async fn start_serving(
             }
             drop(cap);
             drop(mgr);
-            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            // Run uncapped — actual speed depends on capture+encode
+            tokio::task::yield_now().await;
         }
     });
 
@@ -127,7 +128,7 @@ async fn start_serving(
                 }
                 Ok(_) => {} // skip frames or unknown on target receive
                 Err(_) => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                 }
             }
         }

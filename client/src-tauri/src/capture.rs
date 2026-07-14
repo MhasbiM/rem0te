@@ -1,17 +1,31 @@
 use anyhow::Result;
 
-/// Screen capture module supporting macOS (screencapture CLI) and Linux (X11 via x11rb)
+/// Screen capture module supporting macOS (CGDisplay) and Linux (X11 via x11rb)
 pub struct ScreenCapture {
     active: bool,
     display_id: u32,
     width: u32,
     height: u32,
     last_frame: Vec<u8>,
+    #[cfg(target_os = "linux")]
+    x11_conn: Option<x11rb::rust_connection::RustConnection>,
+    #[cfg(target_os = "linux")]
+    x11_screen_num: usize,
 }
 
 impl ScreenCapture {
     pub fn new() -> Self {
-        Self { active: false, display_id: 0, width: 1920, height: 1080, last_frame: Vec::new() }
+        Self {
+            active: false,
+            display_id: 0,
+            width: 1920,
+            height: 1080,
+            last_frame: Vec::new(),
+            #[cfg(target_os = "linux")]
+            x11_conn: None,
+            #[cfg(target_os = "linux")]
+            x11_screen_num: 0,
+        }
     }
 
     pub fn start(&mut self) -> Result<()> {
@@ -29,9 +43,15 @@ impl ScreenCapture {
 
         #[cfg(target_os = "linux")]
         {
-            self.width = 1920;
-            self.height = 1080;
-            log::info!("Linux capture initialized");
+            use x11rb::connection::Connection;
+            let (conn, screen_num) = x11rb::rust_connection::RustConnection::connect(None)
+                .map_err(|e| anyhow::anyhow!("X11 connect: {}", e))?;
+            let screen = &conn.setup().roots[screen_num];
+            self.width = screen.width_in_pixels as u32;
+            self.height = screen.height_in_pixels as u32;
+            self.x11_conn = Some(conn);
+            self.x11_screen_num = screen_num;
+            log::info!("Linux X11 display: {}x{}", self.width, self.height);
         }
 
         Ok(())
@@ -40,6 +60,8 @@ impl ScreenCapture {
     pub fn stop(&mut self) -> Result<()> {
         log::info!("Stopping screen capture");
         self.active = false;
+        #[cfg(target_os = "linux")]
+        { self.x11_conn = None; }
         Ok(())
     }
 
@@ -169,13 +191,10 @@ impl ScreenCapture {
         use image::ImageEncoder;
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::*;
-        use x11rb::rust_connection::RustConnection;
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
 
-        let (conn, screen_num) = RustConnection::connect(None)
-            .map_err(|e| anyhow::anyhow!("X11 connect: {}", e))?;
-        let screen = &conn.setup().roots[screen_num];
+        let conn = self.x11_conn.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("X11 not connected"))?;
+        let screen = &conn.setup().roots[self.x11_screen_num];
         let root = screen.root;
         let geo = conn.get_geometry(root)?.reply()?;
         let w = geo.width as u32;
@@ -188,24 +207,12 @@ impl ScreenCapture {
             .reply()?
             .data;
 
-        // Dirty frame detection: hash first 4096 bytes + last 4096 bytes
-        let mut hasher = DefaultHasher::new();
-        raw[..raw.len().min(4096)].hash(&mut hasher);
-        raw[raw.len().saturating_sub(4096)..].hash(&mut hasher);
-        let hash = hasher.finish();
-
-        // Skip if frame unchanged (use static mut for simplicity)
-        static mut LAST_HASH: u64 = 0;
-        if unsafe { LAST_HASH == hash } && !self.last_frame.is_empty() {
-            return Ok(self.last_frame.clone());
-        }
-        unsafe { LAST_HASH = hash; }
-
-        // Full HD: BGRA → RGB
+        // BGRA → RGB
         let rgb = bgra_to_rgb(&raw, w, h);
 
+        // Fast JPEG encode (quality 25 = small + fast)
         let mut jpeg = Vec::new();
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 50);
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 25);
         encoder.write_image(&rgb, w, h, image::ExtendedColorType::Rgb8)?;
         self.last_frame = jpeg.clone();
         Ok(jpeg)
