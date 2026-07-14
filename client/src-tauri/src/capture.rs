@@ -106,14 +106,17 @@ impl ScreenCapture {
         self.width = geo.width as u32;
         self.height = geo.height as u32;
 
-        let img_data = conn
+        let raw = conn
             .get_image(ImageFormat::Z_PIXMAP, root, 0, 0, geo.width, geo.height, u32::MAX)?
             .reply()?
             .data;
 
+        // X11 Z_PIXMAP returns BGRA (4 bytes per pixel), JPEG needs RGB
+        let rgb = bgra_to_rgb(&raw, geo.width as u32, geo.height as u32);
+
         let mut jpeg = Vec::new();
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 70);
-        encoder.write_image(&img_data, geo.width as u32, geo.height as u32, image::ExtendedColorType::Rgba8)?;
+        encoder.write_image(&rgb, geo.width as u32, geo.height as u32, image::ExtendedColorType::Rgb8)?;
         self.last_frame = jpeg.clone();
         Ok(jpeg)
     }
@@ -142,4 +145,28 @@ impl ScreenCapture {
         encoder.write_image(&img, w, h, image::ExtendedColorType::Rgba8)?;
         Ok(png)
     }
+}
+
+/// Convert BGRA raw bytes (X11 Z_PIXMAP format) to RGB (JPEG-compatible)
+fn bgra_to_rgb(bgra: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let pixels = (width * height) as usize;
+    let mut rgb = Vec::with_capacity(pixels * 3);
+    // BGRA: bytes per row may include padding, but for now assume tightly packed
+    let row_bytes = (width * 4) as usize;
+    for y in 0..height as usize {
+        let row_start = y * row_bytes;
+        for x in 0..width as usize {
+            let i = row_start + x * 4;
+            if i + 3 < bgra.len() {
+                rgb.push(bgra[i + 2]); // R (from B)
+                rgb.push(bgra[i + 1]); // G
+                rgb.push(bgra[i]);     // B (from R)
+            } else {
+                rgb.push(0);
+                rgb.push(0);
+                rgb.push(0);
+            }
+        }
+    }
+    rgb
 }
