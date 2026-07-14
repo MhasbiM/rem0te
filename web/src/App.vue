@@ -16,7 +16,7 @@ const showConnectionDialog = ref(true)
 const signaling = useSignaling()
 const webrtc = useWebRTC((msg: SignalingMessage) => {
   // Sends WebRTC signaling messages through the signaling channel
-  if (msg.type === 'webrtc_answer') {
+  if (msg.type === 'web_rtc_answer') {
     signaling.sendWebRtcAnswer(msg.target_machine, msg.sdp)
   } else if (msg.type === 'ice_candidate_to_agent') {
     signaling.sendIceCandidate(msg.target_machine, msg.candidate, msg.sdp_mid, msg.sdp_m_line_index)
@@ -25,7 +25,7 @@ const webrtc = useWebRTC((msg: SignalingMessage) => {
 
 // Forward signaling messages to WebRTC handler
 signaling.onMessage((msg: SignalingMessage) => {
-  if (msg.type === 'webrtc_answer_from_agent' || msg.type === 'ice_candidate_from_agent') {
+  if (msg.type === 'web_rtc_answer_from_agent' || msg.type === 'ice_candidate_from_agent') {
     webrtc.handleSignalingMessage(msg)
   }
 })
@@ -91,7 +91,7 @@ onMounted(() => {
       <!-- Remote Screen -->
       <RemoteScreen
         v-if="signaling.connected.value && !showConnectionDialog"
-        :stream="webrtc.remoteStream.value"
+        :current-frame-url="webrtc.currentFrameUrl.value"
         :connected="webrtc.connected.value"
         :machines="signaling.machines.value"
         :current-machine="signaling.currentMachine.value"

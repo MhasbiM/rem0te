@@ -2,24 +2,26 @@ import { ref, type Ref } from 'vue'
 import type { MachineId, SignalingMessage } from '@/types/protocol'
 
 export interface UseWebRTCReturn {
-  remoteStream: Ref<MediaStream | null>
+  currentFrameUrl: Ref<string | null>
   connected: Ref<boolean>
   connect: (machineId: MachineId) => Promise<void>
   disconnect: () => void
   sendInputEvent: (event: SignalingMessage) => void
-  // Called by signaling when SDP/ICE arrives from agent
   handleSignalingMessage: (msg: SignalingMessage) => void
 }
 
 export function useWebRTC(
   sendSignaling: (msg: SignalingMessage) => void,
 ): UseWebRTCReturn {
-  const remoteStream = ref<MediaStream | null>(null)
+  const currentFrameUrl = ref<string | null>(null)
   const connected = ref(false)
 
   let pc: RTCPeerConnection | null = null
-  let dataChannel: RTCDataChannel | null = null
+  let inputChannel: RTCDataChannel | null = null
   let currentMachineId: MachineId | null = null
+
+  // Revoke old blob URLs to prevent memory leaks
+  let lastObjectUrl: string | null = null
 
   const iceServers: RTCConfiguration = {
     iceServers: [
@@ -27,17 +29,98 @@ export function useWebRTC(
     ],
   }
 
+  /** Render a complete JPEG frame to the img element. */
+  function renderFrame(data: Uint8Array) {
+    if (lastObjectUrl) {
+      URL.revokeObjectURL(lastObjectUrl)
+    }
+    const blob = new Blob([data as BlobPart], { type: 'image/jpeg' })
+    lastObjectUrl = URL.createObjectURL(blob)
+    currentFrameUrl.value = lastObjectUrl
+    if (!connected.value) {
+      connected.value = true
+    }
+  }
+
   async function connect(machineId: MachineId) {
     currentMachineId = machineId
 
     pc = new RTCPeerConnection(iceServers)
 
-    // ── Remote stream handler ───────────────────────────────────
-    pc.ontrack = (event) => {
-      console.log('[webrtc] remote track received:', event.track.kind)
-      if (event.streams && event.streams[0]) {
-        remoteStream.value = event.streams[0]
-        connected.value = true
+    // ── Incoming data channel handler (video from agent) ──────────
+    pc.ondatachannel = (event) => {
+      const channel = event.channel
+      console.log('[webrtc] incoming data channel:', channel.label)
+
+      if (channel.label === 'video') {
+        channel.binaryType = 'arraybuffer'
+
+        // Chunk reassembly state
+        const pendingFrames = new Map<number, {
+          total: number
+          chunks: Map<number, Uint8Array>
+        }>()
+        let lastCompleteFrame = 0
+
+        channel.onmessage = (msg) => {
+          if (msg.data instanceof ArrayBuffer) {
+            const buf = new Uint8Array(msg.data)
+            if (buf.length < 8) return // too small
+
+            // Parse header: frame_id(u32 BE) + chunk_idx(u16 BE) + total(u16 BE)
+            const view = new DataView(buf.buffer)
+            const frameId = view.getUint32(0, false)
+            const chunkIdx = view.getUint16(4, false)
+            const total = view.getUint16(6, false)
+            const payload = buf.slice(8)
+
+            // Single-chunk frame (common case): render immediately
+            if (total === 1) {
+              renderFrame(payload)
+              lastCompleteFrame = frameId
+              return
+            }
+
+            // Multi-chunk: collect
+            let frame = pendingFrames.get(frameId)
+            if (!frame || frame.total !== total) {
+              frame = { total, chunks: new Map() }
+              pendingFrames.set(frameId, frame)
+            }
+            frame.chunks.set(chunkIdx, payload)
+
+            // Check if complete
+            if (frame.chunks.size === total) {
+              // Concatenate chunks in order
+              const parts: Uint8Array[] = []
+              for (let i = 0; i < total; i++) {
+                const c = frame.chunks.get(i)
+                if (c) parts.push(c)
+              }
+              const complete = new Uint8Array(parts.reduce((s, p) => s + p.length, 0))
+              let offset = 0
+              for (const p of parts) {
+                complete.set(p, offset)
+                offset += p.length
+              }
+
+              pendingFrames.delete(frameId)
+              if (frameId > lastCompleteFrame) {
+                renderFrame(complete)
+                lastCompleteFrame = frameId
+              }
+
+              // Cleanup old incomplete frames (>5 frames behind)
+              for (const [id] of pendingFrames) {
+                if (id < lastCompleteFrame - 5) pendingFrames.delete(id)
+              }
+            }
+          }
+        }
+
+        channel.onopen = () => {
+          console.log('[webrtc] video channel open')
+        }
       }
     }
 
@@ -63,46 +146,47 @@ export function useWebRTC(
     }
 
     // ── Create data channel for input events ────────────────────
-    dataChannel = pc.createDataChannel('input', {
+    inputChannel = pc.createDataChannel('input', {
       ordered: true,
     })
 
-    dataChannel.onopen = () => {
-      console.log('[webrtc] data channel open')
+    inputChannel.onopen = () => {
+      console.log('[webrtc] input channel open')
     }
 
-    dataChannel.onclose = () => {
-      console.log('[webrtc] data channel closed')
+    inputChannel.onclose = () => {
+      console.log('[webrtc] input channel closed')
     }
 
     // ── Create SDP offer ────────────────────────────────────────
-    const offer = await pc.createOffer({
-      offerToReceiveVideo: true,
-      offerToReceiveAudio: false,
-    })
+    const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
 
     // Send offer via signaling
     sendSignaling({
-      type: 'webrtc_answer',
+      type: 'web_rtc_answer',
       target_machine: machineId,
       sdp: pc.localDescription!.sdp,
     } as SignalingMessage)
   }
 
   function disconnect() {
-    dataChannel?.close()
+    inputChannel?.close()
+    if (lastObjectUrl) {
+      URL.revokeObjectURL(lastObjectUrl)
+      lastObjectUrl = null
+    }
     pc?.close()
     pc = null
-    dataChannel = null
+    inputChannel = null
     currentMachineId = null
     connected.value = false
-    remoteStream.value = null
+    currentFrameUrl.value = null
   }
 
   function sendInputEvent(event: SignalingMessage) {
-    if (dataChannel && dataChannel.readyState === 'open') {
-      dataChannel.send(JSON.stringify(event))
+    if (inputChannel && inputChannel.readyState === 'open') {
+      inputChannel.send(JSON.stringify(event))
     }
   }
 
@@ -111,7 +195,7 @@ export function useWebRTC(
 
     try {
       switch (msg.type) {
-        case 'webrtc_answer_from_agent': {
+        case 'web_rtc_answer_from_agent': {
           const answer: RTCSessionDescriptionInit = {
             type: 'answer',
             sdp: msg.sdp,
@@ -137,7 +221,7 @@ export function useWebRTC(
   }
 
   return {
-    remoteStream,
+    currentFrameUrl,
     connected,
     connect,
     disconnect,

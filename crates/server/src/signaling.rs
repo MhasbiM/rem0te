@@ -28,6 +28,8 @@ struct HubInner {
     agents: DashMap<MachineId, AgentHandle>,
     /// Connected web clients: SessionId → client handle.
     web_clients: DashMap<SessionId, WebClientHandle>,
+    /// Active connections: MachineId → web client SessionId.
+    active_connections: DashMap<MachineId, SessionId>,
     /// Auth token required for agent registration.
     token: String,
 }
@@ -70,6 +72,7 @@ impl SignalingHub {
             inner: Arc::new(HubInner {
                 agents: DashMap::new(),
                 web_clients: DashMap::new(),
+                active_connections: DashMap::new(),
                 token,
             }),
         }
@@ -140,6 +143,8 @@ impl SignalingHub {
     pub fn unregister_agent(&self, machine_id: &MachineId) {
         if self.inner.agents.remove(machine_id).is_some() {
             info!(machine_id = %machine_id, "agent unregistered");
+            // Clean up any active connection
+            self.inner.active_connections.remove(machine_id);
             self.broadcast_to_web_clients(SignalingMessage::MachineOffline {
                 machine_id: machine_id.clone(),
             });
@@ -250,13 +255,33 @@ impl SignalingHub {
             .collect()
     }
 
-    /// Look up which machine a web client is connected to by scanning
-    /// for the web client session id. Returns the machine_id if found.
-    ///
-    /// Note: In a real implementation you'd maintain a session→machine mapping.
-    /// For now we return None; the caller tracks this externally.
-    pub fn get_machine_for_web_client(&self, _web_session_id: &SessionId) -> Option<MachineId> {
-        // TODO: maintain a bidirectional mapping
-        None
+    /// Look up which machine a web client is connected to.
+    pub fn get_machine_for_web_client(&self, web_session_id: &SessionId) -> Option<MachineId> {
+        self.inner
+            .active_connections
+            .iter()
+            .find(|entry| entry.value() == web_session_id)
+            .map(|entry| entry.key().clone())
+    }
+
+    /// Record that a web client is now connected to a machine.
+    pub fn set_active_connection(&self, machine_id: MachineId, web_session_id: SessionId) {
+        info!(%machine_id, %web_session_id, "active connection established");
+        self.inner
+            .active_connections
+            .insert(machine_id, web_session_id);
+    }
+
+    /// Remove the active connection for a machine.
+    pub fn remove_active_connection(&self, machine_id: &MachineId) {
+        self.inner.active_connections.remove(machine_id);
+    }
+
+    /// Get the web client session connected to a machine.
+    pub fn get_web_client_for_machine(&self, machine_id: &MachineId) -> Option<SessionId> {
+        self.inner
+            .active_connections
+            .get(machine_id)
+            .map(|entry| entry.value().clone())
     }
 }

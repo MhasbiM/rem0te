@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 
-use super::{CapturedFrame, CaptureImpl};
+use super::{CapturedFrame, CaptureImpl, CursorPosition};
 
 pub struct LinuxCapture {
     display_width: u32,
@@ -47,6 +47,11 @@ impl LinuxCapture {
 impl CaptureImpl for LinuxCapture {
     fn display_dimensions(&self) -> (u32, u32) {
         (self.display_width, self.display_height)
+    }
+
+    fn cursor_position(&self) -> Option<CursorPosition> {
+        // TODO: Use libei or X11/xdotool to get cursor position
+        None
     }
 
     fn capture_frame(&self) -> Result<CapturedFrame> {

@@ -20,14 +20,14 @@ export type SignalingMessage =
   // Server → Agent
   | { type: 'registered'; session_id: SessionId }
   | { type: 'incoming_connection'; session_id: SessionId; web_client_id: SessionId }
-  | { type: 'webrtc_offer'; from_session: SessionId; sdp: string }
+  | { type: 'web_rtc_offer'; from_session: SessionId; sdp: string }
   | { type: 'ice_candidate'; from_session: SessionId; candidate: string; sdp_mid: string | null; sdp_m_line_index: number | null }
   | { type: 'peer_disconnected'; session_id: SessionId }
   // Web Client → Server
   | { type: 'list_machines' }
   | { type: 'connect_to_machine'; machine_id: MachineId }
   | { type: 'disconnect' }
-  | { type: 'webrtc_answer'; target_machine: MachineId; sdp: string }
+  | { type: 'web_rtc_answer'; target_machine: MachineId; sdp: string }
   | { type: 'ice_candidate_to_agent'; target_machine: MachineId; candidate: string; sdp_mid: string | null; sdp_m_line_index: number | null }
   // Server → Web Client
   | { type: 'machine_list'; machines: MachineInfo[] }
@@ -35,7 +35,7 @@ export type SignalingMessage =
   | { type: 'connection_failed'; machine_id: MachineId; reason: string }
   | { type: 'machine_online'; machine: MachineInfo }
   | { type: 'machine_offline'; machine_id: MachineId }
-  | { type: 'webrtc_answer_from_agent'; machine_id: MachineId; sdp: string }
+  | { type: 'web_rtc_answer_from_agent'; machine_id: MachineId; sdp: string }
   | { type: 'ice_candidate_from_agent'; machine_id: MachineId; candidate: string; sdp_mid: string | null; sdp_m_line_index: number | null }
   // Input events
   | { type: 'key_event'; target: MachineId; pressed: boolean; key_code: number }

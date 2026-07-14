@@ -30,6 +30,13 @@ pub struct CapturedFrame {
     pub timestamp: std::time::Instant,
 }
 
+/// Cursor position in display coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct CursorPosition {
+    pub x: u32,
+    pub y: u32,
+}
+
 /// Engine for capturing the desktop screen.
 ///
 /// Platform-specific implementation is selected at compile time.
@@ -90,6 +97,19 @@ impl CaptureEngine {
         }
     }
 
+    /// Get the current cursor position on screen.
+    pub fn cursor_position(&self) -> Option<CursorPosition> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            self.inner.cursor_position()
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            None
+        }
+    }
+
     /// Start continuous frame capture, calling `on_frame` for each frame.
     /// Runs until the returned cancellation token is dropped.
     pub async fn start_streaming<F>(&self, fps: u32, on_frame: F) -> Result<()>
@@ -121,4 +141,5 @@ impl CaptureEngine {
 trait CaptureImpl {
     fn display_dimensions(&self) -> (u32, u32);
     fn capture_frame(&self) -> Result<CapturedFrame>;
+    fn cursor_position(&self) -> Option<CursorPosition>;
 }

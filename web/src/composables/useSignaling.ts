@@ -126,7 +126,7 @@ export function useSignaling(): UseSignalingReturn {
   }
 
   function sendWebRtcAnswer(machineId: MachineId, sdp: string) {
-    send({ type: 'webrtc_answer', target_machine: machineId, sdp } as SignalingMessage)
+    send({ type: 'web_rtc_answer', target_machine: machineId, sdp } as SignalingMessage)
   }
 
   function sendIceCandidate(

@@ -247,6 +247,9 @@ async fn handle_signaling_message(
                     Role::WebClient(sid) => Some(sid.clone()),
                     _ => None,
                 }) {
+                    // Track the connection: machine → web client
+                    state.hub.set_active_connection(machine_id.clone(), web_session_id.clone());
+
                     let agent_msg = SignalingMessage::IncomingConnection {
                         session_id: uuid::Uuid::new_v4().to_string(),
                         web_client_id: web_session_id,
@@ -272,13 +275,37 @@ async fn handle_signaling_message(
             }
         }
 
-        // ── WebRTC relay (Web Client → Agent) ────────────────────
+        // ── WebRTC relay (bidirectional) ────────────────────────
+        // WebRtcAnswer is used by BOTH:
+        //   - Web client: sends SDP offer TO a machine
+        //   - Agent: sends SDP answer back TO server (to forward to web client)
         SignalingMessage::WebRtcAnswer { target_machine, sdp } => {
-            let relay = SignalingMessage::WebRtcOffer {
-                from_session: "web".into(), // TODO: use actual session
-                sdp: sdp.clone(),
-            };
-            state.hub.send_to_agent(target_machine, relay);
+            match role {
+                Some(Role::WebClient(_)) => {
+                    // Web client → Agent: forward the offer
+                    let relay = SignalingMessage::WebRtcOffer {
+                        from_session: "web".into(),
+                        sdp: sdp.clone(),
+                    };
+                    state.hub.send_to_agent(target_machine, relay);
+                }
+                Some(Role::Agent(_)) => {
+                    // Agent → Web Client: forward the answer
+                    if let Some(web_session_id) = state.hub.get_web_client_for_machine(target_machine) {
+                        let relay = SignalingMessage::WebRtcAnswerFromAgent {
+                            machine_id: target_machine.clone(),
+                            sdp: sdp.clone(),
+                        };
+                        state.hub.send_to_web_client(&web_session_id, relay);
+                        debug!("relayed SDP answer from agent → web client");
+                    } else {
+                        warn!(machine_id = %target_machine, "no web client connected to this machine");
+                    }
+                }
+                None => {
+                    warn!("WebRtcAnswer from unidentified peer");
+                }
+            }
         }
 
         SignalingMessage::IceCandidateToAgent {
@@ -294,6 +321,28 @@ async fn handle_signaling_message(
                 sdp_m_line_index: *sdp_m_line_index,
             };
             state.hub.send_to_agent(target_machine, relay);
+        }
+
+        // ── WebRTC relay (Agent → Web Client ICE) ─────────────────
+        SignalingMessage::IceCandidate {
+            from_session: _,
+            candidate,
+            sdp_mid,
+            sdp_m_line_index,
+        } => {
+            // from_session is the agent identifying itself; find the connected machine
+            if let Some(Role::Agent(ref machine_id)) = role {
+                if let Some(web_session_id) = state.hub.get_web_client_for_machine(machine_id) {
+                    let relay = SignalingMessage::IceCandidateFromAgent {
+                        machine_id: machine_id.clone(),
+                        candidate: candidate.clone(),
+                        sdp_mid: sdp_mid.clone(),
+                        sdp_m_line_index: *sdp_m_line_index,
+                    };
+                    state.hub.send_to_web_client(&web_session_id, relay);
+                    debug!("relayed ICE candidate from agent → web client");
+                }
+            }
         }
 
         // ── Input events ────────────────────────────────────────

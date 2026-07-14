@@ -105,6 +105,9 @@ async fn connect_and_run(
     let heartbeat_interval = config.heartbeat_secs;
     let mut heartbeat_tick = tokio::time::interval(Duration::from_secs(heartbeat_interval));
 
+    // Channel for WebRTC manager to push messages back to this loop
+    let (webrtc_tx, mut webrtc_rx) = tokio::sync::mpsc::unbounded_channel::<SignalingMessage>();
+
     // WebRTC manager (lazy-initialized when connection requested)
     let mut webrtc_manager: Option<WebRtcManager> = None;
 
@@ -125,6 +128,7 @@ async fn connect_and_run(
                                     machine_id,
                                     capture,
                                     input,
+                                    &webrtc_tx,
                                 )
                                 .await?;
                             }
@@ -162,6 +166,20 @@ async fn connect_and_run(
                     break;
                 }
             }
+
+            // ── Outgoing WebRTC signaling ─────────────────────────
+            Some(out_msg) = webrtc_rx.recv() => {
+                let json = serde_json::to_string(&out_msg).unwrap();
+                if ws_tx
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
+                    .await
+                    .is_err()
+                {
+                    warn!("failed to send WebRTC signaling message");
+                    break;
+                }
+                debug!("sent WebRTC signaling: {:?}", out_msg);
+            }
         }
     }
 
@@ -169,6 +187,7 @@ async fn connect_and_run(
 }
 
 /// Handle a message received from the signaling server.
+#[allow(clippy::too_many_arguments)]
 async fn handle_server_message(
     msg: SignalingMessage,
     webrtc_manager: &mut Option<WebRtcManager>,
@@ -181,6 +200,7 @@ async fn handle_server_message(
     machine_id: &str,
     capture: &CaptureEngine,
     input: &InputEngine,
+    webrtc_tx: &tokio::sync::mpsc::UnboundedSender<SignalingMessage>,
 ) -> anyhow::Result<()> {
     match msg {
         SignalingMessage::Registered { session_id } => {
@@ -189,17 +209,22 @@ async fn handle_server_message(
 
         SignalingMessage::IncomingConnection {
             session_id,
-            web_client_id,
+            web_client_id: _,
         } => {
             info!(
                 session_id = %session_id,
-                web_client_id = %web_client_id,
                 "incoming connection request"
             );
 
-            // Initialize WebRTC
-            let mut wm = WebRtcManager::new(capture, input).await?;
-            wm.start_session(&session_id, ws_tx, machine_id).await?;
+            // Initialize WebRTC with the signaling channel
+            let mut wm = WebRtcManager::new(
+                capture,
+                input,
+                webrtc_tx.clone(),
+                machine_id.to_string(),
+            )
+            .await?;
+            wm.start_session(&session_id).await?;
             *webrtc_manager = Some(wm);
         }
 
@@ -209,7 +234,17 @@ async fn handle_server_message(
         } => {
             if let Some(ref mut wm) = webrtc_manager {
                 debug!("received WebRTC offer from web client");
-                wm.handle_offer(&sdp).await?;
+                let answer_sdp = wm.handle_offer(&sdp).await?;
+                // Send answer back to server
+                let reply = SignalingMessage::WebRtcAnswer {
+                    target_machine: machine_id.to_string(),
+                    sdp: answer_sdp,
+                };
+                let json = serde_json::to_string(&reply)?;
+                ws_tx
+                    .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
+                    .await?;
+                info!("sent SDP answer back to signaling server");
             }
         }
 

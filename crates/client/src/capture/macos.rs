@@ -20,9 +20,11 @@
 
 use anyhow::{Context, Result};
 use core_graphics::display::CGDisplay;
+use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::image::CGImage;
 
-use super::{CapturedFrame, CaptureImpl};
+use super::{CapturedFrame, CaptureImpl, CursorPosition};
 
 pub struct MacOsCapture {
     display_width: u32,
@@ -47,6 +49,17 @@ impl MacOsCapture {
 impl CaptureImpl for MacOsCapture {
     fn display_dimensions(&self) -> (u32, u32) {
         (self.display_width, self.display_height)
+    }
+
+    fn cursor_position(&self) -> Option<CursorPosition> {
+        // Create a NULL event to query current cursor location
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+        let event = CGEvent::new(source).ok()?;
+        let pos = event.location();
+        Some(CursorPosition {
+            x: pos.x as u32,
+            y: pos.y as u32,
+        })
     }
 
     fn capture_frame(&self) -> Result<CapturedFrame> {

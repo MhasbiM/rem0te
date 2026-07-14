@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, onUnmounted } from 'vue'
 import type { MachineInfo, MachineId, SignalingMessage } from '@/types/protocol'
 
 const props = defineProps<{
-  stream: MediaStream | null
+  currentFrameUrl: string | null
   connected: boolean
   machines: MachineInfo[]
   currentMachine: MachineId | null
@@ -14,17 +14,8 @@ const emit = defineEmits<{
   inputEvent: [event: SignalingMessage]
 }>()
 
-const videoRef = ref<HTMLVideoElement | null>(null)
 const containerRef = ref<HTMLDivElement | null>(null)
 const isFullscreen = ref(false)
-
-// Attach stream to video element
-watch(() => props.stream, (stream) => {
-  if (videoRef.value && stream) {
-    videoRef.value.srcObject = stream
-    videoRef.value.play().catch(console.error)
-  }
-}, { immediate: true })
 
 // ── Input handling ──────────────────────────────────────────────
 
@@ -167,13 +158,11 @@ onUnmounted(() => {
       </div>
 
       <!-- Video element -->
-      <video
-        ref="videoRef"
+      <img
+        v-if="connected && currentFrameUrl"
+        :src="currentFrameUrl"
         class="screen-video"
-        :class="{ hidden: !connected }"
-        autoplay
-        playsinline
-        muted
+        alt="Remote desktop"
       />
 
       <!-- Stream info overlay -->
@@ -314,10 +303,6 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
-}
-
-.screen-video.hidden {
-  display: none;
 }
 
 .stream-overlay {
