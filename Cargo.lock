@@ -3103,6 +3103,7 @@ dependencies = [
  "gstreamer-video",
  "hostname",
  "image",
+ "libc",
  "objc2",
  "objc2-foundation",
  "rem0te-shared",

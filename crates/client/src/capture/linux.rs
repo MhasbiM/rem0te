@@ -20,13 +20,30 @@ pub struct LinuxCapture {
     display_height: u32,
     /// Whether X11 capture is available.
     x11_available: AtomicBool,
-    /// Cached X11 connection (opened once, reused across frames).
+    /// Cached X11 connection.
     #[cfg(feature = "x11-capture")]
     x11_conn: Option<Arc<Mutex<RustConnection>>>,
-    /// Screen number for the cached connection.
+    /// Screen number.
     #[cfg(feature = "x11-capture")]
     x11_screen_num: usize,
+    /// SHM segment (lazy-initialized on first capture).
+    #[cfg(feature = "x11-capture")]
+    shm: Mutex<Option<ShmState>>,
 }
+
+#[cfg(feature = "x11-capture")]
+struct ShmState {
+    seg: u32,       // X11 SHM segment ID (for x11rb)
+    id: i32,        // OS shmget ID (for cleanup)
+    ptr: *mut u8,   // mapped memory
+    size: usize,    // segment size in bytes
+}
+
+// Safety: ShmState owns the shared memory mapping
+#[cfg(feature = "x11-capture")]
+unsafe impl Send for ShmState {}
+#[cfg(feature = "x11-capture")]
+unsafe impl Sync for ShmState {}
 
 impl LinuxCapture {
     pub async fn new() -> Result<Self> {
@@ -46,6 +63,8 @@ impl LinuxCapture {
                 x11_conn: None,
                 #[cfg(feature = "x11-capture")]
                 x11_screen_num: 0,
+                #[cfg(feature = "x11-capture")]
+                shm: Mutex::new(None),
             });
         }
 
@@ -104,6 +123,8 @@ impl LinuxCapture {
             x11_conn: conn,
             #[cfg(feature = "x11-capture")]
             x11_screen_num: screen_num,
+            #[cfg(feature = "x11-capture")]
+            shm: Mutex::new(None),
         })
     }
 }
@@ -151,6 +172,7 @@ impl CaptureImpl for LinuxCapture {
 #[cfg(feature = "x11-capture")]
 fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
     use x11rb::connection::Connection;
+    use x11rb::protocol::shm::ConnectionExt as _;
     use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
 
     let conn = cap.x11_conn.as_ref()
@@ -163,80 +185,65 @@ fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
     let geo = conn.get_geometry(root)?.reply()?;
     let w = geo.width as u32;
     let h = geo.height as u32;
-    let depth = geo.depth;
+
+    // Size: 32bpp for ZPixmap
+    let size = (w as usize) * (h as usize) * 4;
+
+    // Lazy-init SHM
+    let mut shm_guard = cap.shm.lock().unwrap();
+    if shm_guard.is_none() {
+        *shm_guard = Some(create_shm(&conn, size)?);
+        tracing::info!("X11 SHM ready: {} bytes", size);
+    }
+    let shm = shm_guard.as_ref().unwrap();
 
     let t0 = std::time::Instant::now();
-    let reply = conn
-        .get_image(
-            ImageFormat::Z_PIXMAP,
-            root,
-            0,
-            0,
-            geo.width,
-            geo.height,
-            u32::MAX,
-        )?
-        .reply()?;
-
-    let raw = reply.data;
-    let pixel_count = (w as usize) * (h as usize);
-    let bpp = raw.len() / pixel_count; // actual bytes per pixel
-
-    let bgra = match bpp {
-        4 => {
-            // BGRX (32-bit, X = unused/padding)
-            let mut out = Vec::with_capacity(pixel_count * 4);
-            for chunk in raw.chunks_exact(4) {
-                out.push(chunk[0]); // B
-                out.push(chunk[1]); // G
-                out.push(chunk[2]); // R
-                out.push(255);      // A
-            }
-            let full = raw.len() / 4;
-            for _ in full..pixel_count {
-                out.extend_from_slice(&[0, 0, 0, 255]);
-            }
-            out
-        }
-        3 => {
-            // BGR (24-bit, tightly packed)
-            let mut out = Vec::with_capacity(pixel_count * 4);
-            for chunk in raw.chunks_exact(3) {
-                out.push(chunk[0]); out.push(chunk[1]); out.push(chunk[2]);
-                out.push(255);
-            }
-            out
-        }
-        2 => {
-            // RGB565 (16-bit)
-            let mut out = Vec::with_capacity(pixel_count * 4);
-            for chunk in raw.chunks_exact(2) {
-                let p = u16::from_le_bytes([chunk[0], chunk[1]]);
-                let r = ((p >> 11) & 0x1F) as u8 * 255 / 31;
-                let g = ((p >> 5) & 0x3F) as u8 * 255 / 63;
-                let b = (p & 0x1F) as u8 * 255 / 31;
-                out.push(b); out.push(g); out.push(r); out.push(255);
-            }
-            out
-        }
-        n => anyhow::bail!(
-            "unexpected X11 bytes-per-pixel: {n} (depth={depth}, raw={}B, w={w}, h={h})",
-            raw.len()
-        ),
-    };
-
+    conn.shm_get_image(root, 0, 0, geo.width, geo.height, u32::MAX, ImageFormat::Z_PIXMAP, shm.seg, 0)?.reply()?;
+    let raw = unsafe { std::slice::from_raw_parts(shm.ptr, size) };
     let elapsed = t0.elapsed();
-    tracing::debug!(
-        "X11 capture: {}x{} depth={} bpp={} {}B → {}B BGRA in {:?}",
-        w, h, depth, bpp, raw.len(), bgra.len(), elapsed
-    );
+    let pixel_count = (w as usize) * (h as usize);
 
-    Ok(CapturedFrame {
-        data: bgra,
-        width: w,
-        height: h,
-        timestamp: std::time::Instant::now(),
-    })
+    // SHM ZPixmap: BGRX 32bpp → BGRA
+    let mut bgra = Vec::with_capacity(pixel_count * 4);
+    for chunk in raw.chunks_exact(4) {
+        bgra.push(chunk[0]); // B
+        bgra.push(chunk[1]); // G
+        bgra.push(chunk[2]); // R
+        bgra.push(255);      // A
+    }
+    for _ in (raw.len() / 4)..pixel_count { bgra.extend_from_slice(&[0,0,0,255]); }
+
+    tracing::debug!("X11 SHM: {}x{} {}B → {}B in {:?}", w, h, raw.len(), bgra.len(), elapsed);
+    Ok(CapturedFrame { data: bgra, width: w, height: h, timestamp: std::time::Instant::now() })
+}
+
+/// Create a shared memory segment and attach to X server.
+#[cfg(feature = "x11-capture")]
+fn create_shm(conn: &RustConnection, size: usize) -> Result<ShmState> {
+    use x11rb::protocol::shm::ConnectionExt as _;
+
+    let id = unsafe { libc::shmget(libc::IPC_PRIVATE, size, libc::IPC_CREAT | 0o600) };
+    if id < 0 {
+        anyhow::bail!("shmget failed: {}", std::io::Error::last_os_error());
+    }
+    let ptr = unsafe { libc::shmat(id, std::ptr::null(), 0) };
+    if ptr == libc::MAP_FAILED {
+        unsafe { libc::shmctl(id, libc::IPC_RMID, std::ptr::null_mut()) };
+        anyhow::bail!("shmat failed: {}", std::io::Error::last_os_error());
+    }
+    let seg = conn.generate_id()?;
+    conn.shm_attach(seg, id as u32, false)?;
+    Ok(ShmState { seg, id, ptr: ptr as *mut u8, size })
+}
+
+#[cfg(feature = "x11-capture")]
+impl Drop for ShmState {
+    fn drop(&mut self) {
+        unsafe {
+            libc::shmdt(self.ptr as *const _);
+            libc::shmctl(self.id, libc::IPC_RMID, std::ptr::null_mut());
+        }
+    }
 }
 
 #[cfg(not(feature = "x11-capture"))]

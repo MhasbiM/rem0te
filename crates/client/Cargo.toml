@@ -64,6 +64,9 @@ evdev = { version = "0.12", optional = true }
 # X11 capture (pure Rust)
 x11rb = { version = "0.13", optional = true, features = ["allow-unsafe-code", "xtest", "shm"] }
 
+# SHM syscalls for fast X11 capture
+libc = "0.2"
+
 # Input injection (uses XTest via x11rb — already included)
 
 [target.'cfg(target_os = "macos")'.dependencies]

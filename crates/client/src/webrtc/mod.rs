@@ -36,14 +36,14 @@ use crate::input::InputEngine;
 /// Max chunk size for data channel (must be < 64KB SCTP limit).
 const CHUNK_SIZE: usize = 60_000;
 
-/// JPEG quality. Lower = faster encoding + smaller chunks.
-const JPEG_QUALITY: u8 = 55;
+/// JPEG quality. High = sharp.
+const JPEG_QUALITY: u8 = 70;
 
-/// Max width: 1280 for faster X11 capture (~60ms vs ~125ms at 1920).
-const MAX_FRAME_WIDTH: u32 = 1280;
+/// Max width. Full HD with SHM capture is near-instant.
+const MAX_FRAME_WIDTH: u32 = 1920;
 
-/// Target FPS.
-const STREAM_FPS: u32 = 10;
+/// Target FPS. SHM capture is fast enough for smooth video.
+const STREAM_FPS: u32 = 15;
 
 /// Manages a WebRTC session for one remote viewer.
 pub struct WebRtcManager {
@@ -314,43 +314,6 @@ fn capture_frame_jpeg(capture: &CaptureEngine) -> Result<Vec<u8>> {
 
     debug!("frame {}x{}→{}x{} JPEG {} bytes", frame.width, frame.height, out_w, out_h, jpeg_bytes.len());
     Ok(jpeg_bytes)
-}
-
-/// Draw a clean arrow cursor using geometric lines.
-/// White arrow with 1px black outline, 16x24 pixels.
-fn draw_cursor(rgb: &mut [u8], width: u32, height: u32, cx: u32, cy: u32) {
-    let white = [255u8, 255, 255];
-    let black = [0u8, 0, 0];
-
-    // Helper: set pixel if in bounds
-    let mut set = |px: i32, py: i32, color: &[u8; 3]| {
-        if px >= 0 && py >= 0 && (px as u32) < width && (py as u32) < height {
-            let idx = ((py as u32) * width + (px as u32)) as usize * 3;
-            if idx + 2 < rgb.len() {
-                rgb[idx] = color[0]; rgb[idx + 1] = color[1]; rgb[idx + 2] = color[2];
-            }
-        }
-    };
-
-    let cx = cx as i32;
-    let cy = cy as i32;
-
-    // Outline: draw black 1px border around the arrow shape
-    for dy in -1..=1i32 {
-        for dx in -1..=1i32 {
-            // Diagonal edge (top-left to middle-right)
-            for i in 0..=14 { set(cx + i + dx, cy + i + dy, &black); }
-            // Vertical stem
-            for i in 5..=22 { set(cx + 7 + dx, cy + i + dy, &black); }
-            // Horizontal bar at bottom
-            for i in 0..=7 { set(cx + i + dx, cy + 18 + dy, &black); }
-        }
-    }
-
-    // Fill: draw white interior
-    for i in 1..=13 { set(cx + i, cy + i, &white); }
-    for i in 6..=21 { set(cx + 7, cy + i, &white); }
-    for i in 1..=6  { set(cx + i, cy + 18, &white); }
 }
 
 // ---------------------------------------------------------------------------
