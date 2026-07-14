@@ -9,10 +9,25 @@ use {x11rb::connection::Connection, x11rb::protocol::xtest::ConnectionExt as _,
 
 use super::InputImpl;
 
+//! Linux input via X11 XTest (x11rb).
+
+use std::sync::Mutex;
+use anyhow::Result;
+
+#[cfg(feature = "x11-capture")]
+use {x11rb::connection::Connection, x11rb::protocol::xtest::ConnectionExt as _,
+     x11rb::protocol::xproto::ConnectionExt, x11rb::rust_connection::RustConnection};
+
+use super::InputImpl;
+
 pub struct LinuxInput {
     #[cfg(feature = "x11-capture")]
-    conn: Mutex<RustConnection>,
-    #[cfg(feature = "x11-capture")]
+    state: Option<Mutex<InputState>>,
+}
+
+#[cfg(feature = "x11-capture")]
+struct InputState {
+    conn: RustConnection,
     root: u32,
 }
 
@@ -20,68 +35,80 @@ impl LinuxInput {
     pub async fn new() -> Result<Self> {
         #[cfg(feature = "x11-capture")]
         {
-            let d = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
-            let (conn, sn) = RustConnection::connect(Some(&d))
-                .map_err(|e| anyhow::anyhow!("X11 connect fail: {e}"))?;
-            let root = conn.setup().roots[sn].root;
-            tracing::info!("Linux input ready (XTest on {d})");
-            return Ok(Self { conn: Mutex::new(conn), root });
+            let mut ds: Vec<String> = Vec::new();
+            if let Ok(d) = std::env::var("DISPLAY") { if !d.is_empty() { ds.push(d); } }
+            ds.push(":0".into()); ds.push(":1".into()); ds.push(":0.0".into());
+
+            for d in &ds {
+                match RustConnection::connect(Some(d.as_str())) {
+                    Ok((conn, sn)) => {
+                        let root = conn.setup().roots[sn].root;
+                        tracing::info!("Linux input ready (XTest on {d})");
+                        return Ok(Self { state: Some(Mutex::new(InputState { conn, root })) });
+                    }
+                    Err(e) => tracing::warn!("X11 input '{d}': {e}"),
+                }
+            }
+            tracing::warn!("No X11 display — input disabled");
+            Ok(Self { state: None })
         }
         #[cfg(not(feature = "x11-capture"))]
-        {
-            tracing::warn!("x11-capture disabled — input stubs");
-            Ok(Self {})
-        }
+        Ok(Self {})
     }
+}
+
+macro_rules! with_state {
+    // When x11-capture is enabled, lock and use the connection
+    ($self:expr, $body:block) => {
+        #[cfg(feature = "x11-capture")]
+        if let Some(ref state) = $self.state {
+            let c = state.lock().unwrap();
+            $body
+        }
+    };
 }
 
 impl InputImpl for LinuxInput {
     fn send_key_event(&self, key_code: u16, pressed: bool) -> Result<()> {
-        #[cfg(feature = "x11-capture")]
-        if let Some(xc) = dom_to_x11_keycode(key_code) {
-            let c = self.conn.lock().unwrap();
-            let t = if pressed { x11rb::protocol::xproto::KEY_PRESS_EVENT }
-                    else { x11rb::protocol::xproto::KEY_RELEASE_EVENT };
-            c.xtest_fake_input(t, xc, 0, 0, 0, 0, 0)?;
-            c.flush()?;
-        }
+        with_state!(self, {
+            if let Some(xc) = dom_to_x11_keycode(key_code) {
+                let t = if pressed { x11rb::protocol::xproto::KEY_PRESS_EVENT }
+                        else { x11rb::protocol::xproto::KEY_RELEASE_EVENT };
+                c.conn.xtest_fake_input(t, xc, 0, 0, 0, 0, 0)?;
+                c.conn.flush()?;
+            }
+        });
         Ok(())
     }
 
     fn send_mouse_move(&self, x: f64, y: f64) -> Result<()> {
-        #[cfg(feature = "x11-capture")]
-        {
-            let c = self.conn.lock().unwrap();
-            c.warp_pointer(x11rb::NONE, self.root, 0, 0, 0, 0, x as i16, y as i16)?;
-            c.flush()?;
-        }
+        with_state!(self, {
+            c.conn.warp_pointer(x11rb::NONE, c.root, 0, 0, 0, 0, x as i16, y as i16)?;
+            c.conn.flush()?;
+        });
         Ok(())
     }
 
     fn send_mouse_button(&self, button: u8, pressed: bool) -> Result<()> {
-        #[cfg(feature = "x11-capture")]
-        {
-            let c = self.conn.lock().unwrap();
+        with_state!(self, {
             let b = match button { 0 => 1, 1 => 3, 2 => 2, _ => return Ok(()) };
             let t = if pressed { x11rb::protocol::xproto::BUTTON_PRESS_EVENT }
                     else { x11rb::protocol::xproto::BUTTON_RELEASE_EVENT };
-            c.xtest_fake_input(t, b, 0, 0, 0, 0, 0)?;
-            c.flush()?;
-        }
+            c.conn.xtest_fake_input(t, b, 0, 0, 0, 0, 0)?;
+            c.conn.flush()?;
+        });
         Ok(())
     }
 
     fn send_mouse_scroll(&self, _dx: f64, dy: f64) -> Result<()> {
-        #[cfg(feature = "x11-capture")]
-        {
-            let c = self.conn.lock().unwrap();
+        with_state!(self, {
             let b = if dy > 0.0 { 5u8 } else { 4u8 };
             for _ in 0..((dy.abs() / 50.0).ceil() as usize).max(1) {
-                c.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, b, 0, 0, 0, 0, 0)?;
-                c.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, b, 0, 0, 0, 0, 0)?;
+                c.conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, b, 0, 0, 0, 0, 0)?;
+                c.conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, b, 0, 0, 0, 0, 0)?;
             }
-            c.flush()?;
-        }
+            c.conn.flush()?;
+        });
         Ok(())
     }
 }
