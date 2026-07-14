@@ -207,7 +207,7 @@ fn capture_x11_cached(cap: &LinuxCapture) -> Result<CapturedFrame> {
         &conn.get_image(ImageFormat::Z_PIXMAP, root, 0, 0, geo.width, geo.height, u32::MAX)?.reply()?.data
     };
     let elapsed = t0.elapsed();
-    tracing::info!("capture: {}x{} in {:?} ({})", w, h, elapsed, if let Some(_) = *shm_guard { "SHM" } else { "GetImage" });
+    tracing::debug!("capture: {}x{} in {:?} ({})", w, h, elapsed, if let Some(_) = *shm_guard { "SHM" } else { "GetImage" });
     let pixel_count = (w as usize) * (h as usize);
 
     // SHM ZPixmap: BGRX 32bpp → BGRA

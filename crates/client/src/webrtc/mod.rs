@@ -36,14 +36,14 @@ use crate::input::InputEngine;
 /// Max chunk size for data channel (must be < 64KB SCTP limit).
 const CHUNK_SIZE: usize = 60_000;
 
-/// Quality.
-const JPEG_QUALITY: u8 = 65;
+/// JPEG quality.
+const JPEG_QUALITY: u8 = 58;
 
-/// Max width: Full HD.
-const MAX_FRAME_WIDTH: u32 = 1920;
+/// Max width. 1600px is a good balance of quality and encoding speed.
+const MAX_FRAME_WIDTH: u32 = 1600;
 
-/// Target FPS. SHM capture is ~3-8ms — 24fps is easily achievable.
-const STREAM_FPS: u32 = 24;
+/// Target FPS.
+const STREAM_FPS: u32 = 20;
 
 /// Manages a WebRTC session for one remote viewer.
 pub struct WebRtcManager {
@@ -246,7 +246,7 @@ impl WebRtcManager {
 
                         frames_since_report += 1;
                         let elapsed = last_report.elapsed();
-                        if elapsed.as_secs() >= 5 {
+                        if elapsed.as_secs() >= 3 {
                             let fps = frames_since_report as f64 / elapsed.as_secs_f64();
                             info!("video actual FPS: {:.1}", fps);
                             last_report = tokio::time::Instant::now();

@@ -66,10 +66,10 @@ function getRelativeCoords(clientX: number, clientY: number): { x: number; y: nu
 
 function onMouseMove(e: MouseEvent) {
   if (!props.currentMachine) return
-  const r = getImageRect()
-  if (r) {
-    cursorX.value = e.clientX - r.left
-    cursorY.value = e.clientY - r.top
+  const cr = containerRef.value?.getBoundingClientRect()
+  if (cr) {
+    cursorX.value = e.clientX - cr.left
+    cursorY.value = e.clientY - cr.top
     showCursor.value = true
   }
   const { x, y } = getRelativeCoords(e.clientX, e.clientY)
