@@ -58,6 +58,7 @@ class _RemotePageState extends State<RemotePage> {
 
   void _sendInput(String type, {String? keyCode, double? x, double? y, String? button}) {
     final evt = jsonEncode({'type': type, if (keyCode != null) 'key_code': keyCode, if (x != null) 'x': x, if (y != null) 'y': y, if (button != null) 'button': button});
+    debugPrint('SEND INPUT to ${widget.peerId}: $evt');
     widget.signaling.sendInputEvent(widget.peerId, evt);
   }
 
@@ -79,11 +80,12 @@ class _RemotePageState extends State<RemotePage> {
     return Focus(
       autofocus: true,
       onKeyEvent: (node, event) {
-        if (event is KeyDownEvent) {
+        final t = event.runtimeType.toString();
+        if (t.endsWith('KeyDownEvent')) {
           _sendInput('keyDown', keyCode: event.logicalKey.keyLabel);
           return KeyEventResult.handled;
         }
-        if (event is KeyUpEvent) {
+        if (t.endsWith('KeyUpEvent')) {
           _sendInput('keyUp', keyCode: event.logicalKey.keyLabel);
           return KeyEventResult.handled;
         }

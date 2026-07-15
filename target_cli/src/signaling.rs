@@ -78,12 +78,56 @@ impl Signaling {
 #[cfg(target_os = "linux")]
 fn simulate_input(evt: &serde_json::Value) {
     use std::process::Command;
+    let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
     match evt["type"].as_str().unwrap_or("") {
-        "keyDown" => { if let Some(k) = evt["key_code"].as_str() { let _ = Command::new("xdotool").args(["keydown", &key_name(k)]).output(); } }
-        "keyUp"   => { if let Some(k) = evt["key_code"].as_str() { let _ = Command::new("xdotool").args(["keyup", &key_name(k)]).output(); } }
-        "mouseMove" => { if let (Some(x), Some(y)) = (evt["x"].as_f64(), evt["y"].as_f64()) { let _ = Command::new("xdotool").args(["mousemove", &format!("{}", x as i32), &format!("{}", y as i32)]).output(); } }
-        "mouseDown" => { let b = evt["button"].as_str().unwrap_or("left"); let _ = Command::new("xdotool").args(["mousedown", b]).output(); }
-        "mouseUp"   => { let b = evt["button"].as_str().unwrap_or("left"); let _ = Command::new("xdotool").args(["mouseup", b]).output(); }
+        "keyDown" => {
+            if let Some(k) = evt["key_code"].as_str() {
+                let kn = key_name(k);
+                log::info!("xdotool keydown {} on {}", kn, display);
+                match Command::new("xdotool").args(["keydown", &kn]).env("DISPLAY", &display).output() {
+                    Ok(o) => log::info!("xdotool keydown ok: {:?}", String::from_utf8_lossy(&o.stderr)),
+                    Err(e) => log::error!("xdotool keydown failed: {}", e),
+                }
+            }
+        }
+        "keyUp"   => {
+            if let Some(k) = evt["key_code"].as_str() {
+                let kn = key_name(k);
+                match Command::new("xdotool").args(["keyup", &kn]).env("DISPLAY", &display).output() {
+                    Ok(o) => log::info!("xdotool keyup ok: {:?}", String::from_utf8_lossy(&o.stderr)),
+                    Err(e) => log::error!("xdotool keyup failed: {}", e),
+                }
+            }
+        }
+        "mouseMove" => {
+            if let (Some(x), Some(y)) = (evt["x"].as_f64(), evt["y"].as_f64()) {
+                let sx = format!("{}", x as i32);
+                let sy = format!("{}", y as i32);
+                match Command::new("xdotool").args(["mousemove", &sx, &sy]).env("DISPLAY", &display).output() {
+                    Ok(o) => { if !o.stderr.is_empty() { log::warn!("xdotool mousemove: {}", String::from_utf8_lossy(&o.stderr)); } }
+                    Err(e) => log::error!("xdotool mousemove failed: {}", e),
+                }
+            }
+        }
+        "mouseDown" => {
+            let btn = match evt["button"].as_str().unwrap_or("left") {
+                "left" => "1", "middle" => "2", "right" => "3", other => other,
+            };
+            log::info!("xdotool mousedown {} on {}", btn, display);
+            match Command::new("xdotool").args(["mousedown", btn]).env("DISPLAY", &display).output() {
+                Ok(o) => log::info!("xdotool mousedown ok: {:?}", String::from_utf8_lossy(&o.stderr)),
+                Err(e) => log::error!("xdotool mousedown failed: {}", e),
+            }
+        }
+        "mouseUp"   => {
+            let btn = match evt["button"].as_str().unwrap_or("left") {
+                "left" => "1", "middle" => "2", "right" => "3", other => other,
+            };
+            match Command::new("xdotool").args(["mouseup", btn]).env("DISPLAY", &display).output() {
+                Ok(o) => log::info!("xdotool mouseup ok: {:?}", String::from_utf8_lossy(&o.stderr)),
+                Err(e) => log::error!("xdotool mouseup failed: {}", e),
+            }
+        }
         _ => {}
     }
 }
