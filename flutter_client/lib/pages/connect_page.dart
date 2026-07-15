@@ -31,7 +31,6 @@ class _ConnectPageState extends State<ConnectPage> {
         if (mounted) _goRemote(ev.fromPeer, true);
       } catch (e) { setState(() { _err = 'Relay: $e'; _busy = false; }); }
     });
-    _signaling.requestConnection.listen((from) => _signaling.acceptConnection(from));
     _signaling.relayInfo.listen((info) async {
       try { await _relay.joinSession(info.relayHost, info.sessionId); } catch (_) {}
     });
