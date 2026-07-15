@@ -45,12 +45,13 @@ impl ScreenCapture {
             let geo = conn.get_geometry(root)?.reply()?;
             let raw = conn.get_image(ImageFormat::Z_PIXMAP, root, 0, 0, geo.width, geo.height, u32::MAX)?.reply()?.data;
 
-            // Full resolution + mozjpeg quality 60
-            let rgb = bgra_to_rgb_full(&raw, geo.width as u32, geo.height as u32);
+            // 50% downscale + mozjpeg quality 60 (balance speed/quality)
+            let (sw, sh) = (geo.width as u32 / 2, geo.height as u32 / 2);
+            let rgb = bgra_to_rgb_scaled(&raw, geo.width as u32, geo.height as u32, sw, sh);
 
             let mut jpeg = Vec::new();
             let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
-            comp.set_size(geo.width as usize, geo.height as usize);
+            comp.set_size(sw as usize, sh as usize);
             comp.set_quality(60.0);
             comp.set_fastest_defaults();
             let mut comp = comp.start_compress(&mut jpeg).context("JPEG compress")?;

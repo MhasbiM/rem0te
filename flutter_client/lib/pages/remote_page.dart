@@ -61,6 +61,12 @@ class _RemotePageState extends State<RemotePage> {
     widget.signaling.sendInputEvent(widget.peerId, evt);
   }
 
+  String _btnName(int buttons) {
+    if (buttons & 2 != 0) return 'right';
+    if (buttons & 4 != 0) return 'middle';
+    return 'left';
+  }
+
   void _disconnect() {
     widget.signaling.sendSessionEnd(widget.peerId);
     widget.relay.disconnect();
@@ -69,7 +75,20 @@ class _RemotePageState extends State<RemotePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        if (event.runtimeType.toString() == 'KeyDownEvent') {
+          _sendInput('keyDown', keyCode: event.logicalKey.keyLabel);
+          return KeyEventResult.handled;
+        }
+        if (event.runtimeType.toString() == 'KeyUpEvent') {
+          _sendInput('keyUp', keyCode: event.logicalKey.keyLabel);
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: Text(widget.hostname, style: const TextStyle(fontSize: 16)),
         actions: [
@@ -79,10 +98,14 @@ class _RemotePageState extends State<RemotePage> {
           IconButton(icon: const Icon(Icons.close, color: Colors.red), onPressed: _disconnect),
         ],
       ),
-      body: GestureDetector(
-        onPanUpdate: (d) => _sendInput('mouseMove', x: d.localPosition.dx, y: d.localPosition.dy),
-        onTapDown: (d) => _sendInput('mouseDown', button: 'left'),
-        onTapUp: (_) => _sendInput('mouseUp', button: 'left'),
+      body: Listener(
+        onPointerDown: (e) => _sendInput('mouseDown', button: _btnName(e.buttons)),
+        onPointerUp: (e) => _sendInput('mouseUp', button: _btnName(e.buttons)),
+        onPointerMove: (e) {
+          final sz = context.size;
+          if (sz == null) return;
+          _sendInput('mouseMove', x: e.localPosition.dx / sz.width * 1920, y: e.localPosition.dy / sz.height * 1080);
+        },
         child: Container(
           color: Colors.black,
           child: _frame != null
@@ -95,6 +118,7 @@ class _RemotePageState extends State<RemotePage> {
                   Text('Waiting for stream...', style: TextStyle(color: Colors.white54)),
                 ])),
         ),
+      ),
       ),
     );
   }
