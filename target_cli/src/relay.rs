@@ -13,8 +13,9 @@ impl RelayClient {
         let port: u16 = if parts.len() == 2 { parts[0].parse().unwrap_or(21117) } else { 21117 };
 
         let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
-        let padded = format!("{:36}", session_id);
-        stream.write_all(padded.as_bytes()).await?;
+        // Session ID must be exactly 36 bytes — pad with zeros if needed
+        let sid_bytes = format!("{:0<36}", session_id).into_bytes();
+        stream.write_all(&sid_bytes).await?;
         stream.write_all(&[1u8]).await?; // role 1 = target
         log::info!("Connected to relay session {}", session_id);
         Ok(Self { stream })

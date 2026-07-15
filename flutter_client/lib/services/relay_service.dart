@@ -20,11 +20,11 @@ class RelayService {
     _socket = await Socket.connect(host, port, timeout: const Duration(seconds: 5));
     _connected = true;
 
-    // Generate session ID (UUID-like)
-    final sessionId = '${DateTime.now().millisecondsSinceEpoch}-${_socket!.port}';
-    // Pad to 36 bytes
-    final padded = sessionId.padRight(36, '0').substring(0, 36);
-    _socket!.add(ascii.encode(padded));
+    // Generate 36-char session ID (like UUID)
+    final now = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final rand = (DateTime.now().millisecond * 9999).toRadixString(36);
+    final sessionId = '${now.padLeft(18, '0')}-${rand.padLeft(17, '0')}';
+    _socket!.add(utf8.encode(sessionId));
     _socket!.add([0]); // role 0 = initiator (viewer)
 
     _startReading();
@@ -40,8 +40,9 @@ class RelayService {
     _socket = await Socket.connect(host, port, timeout: const Duration(seconds: 5));
     _connected = true;
 
-    final padded = sessionId.padRight(36, '0').substring(0, 36);
-    _socket!.add(ascii.encode(padded));
+    // Pad to exactly 36 bytes with trailing zeros
+    final sid = sessionId.padRight(36, '0').substring(0, 36);
+    _socket!.add(utf8.encode(sid));
     _socket!.add([1]); // role 1 = joiner (target)
 
     _startReading();
