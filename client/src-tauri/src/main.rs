@@ -30,7 +30,7 @@ pub struct AppState {
 #[tauri::command]
 async fn start_viewing(
     state: tauri::State<'_, AppState>,
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     server_addr: String,
     peer_id: String,
 ) -> Result<String, String> {
@@ -48,29 +48,15 @@ async fn start_viewing(
     *state.relay_writer.lock().await = writer;
     *state.relay_reader.lock().await = reader;
 
-    // ── Native GPU window (all platforms) ──
+    // ── Native GPU window (main thread on macOS, background on Linux) ──
     let frame_tx = native_viewer::start_native_viewer(960, 540);
     let reader_arc = state.relay_reader.clone();
     let manager_arc = state.connection_manager.clone();
 
     tokio::spawn(async move {
-        loop {
-            { let mgr = manager_arc.lock().await; if mgr.role != SessionRole::Viewer { break; } }
-            let mut r = reader_arc.lock().await;
-            if let Some(ref mut reader) = *r {
-                let mut lb = [0u8; 4];
-                if reader.read_exact(&mut lb).await.is_err() { break; }
-                let tl = u32::from_be_bytes(lb) as usize;
-                if tl == 0 || tl > 10_000_000 { break; }
-                let mut buf = vec![0u8; tl];
-                if reader.read_exact(&mut buf).await.is_err() { break; }
-                if buf.len() >= 9 && buf[0] == relay_client::MSG_FRAME {
-                    let pl = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-                    let frame = buf[5..(5+pl).min(buf.len())].to_vec();
-                    let _ = frame_tx.send(frame);
-                }
-            } else { break; }
-        }
+        relay_read_loop(reader_arc, manager_arc, move |frame| {
+            let _ = frame_tx.send(frame);
+        }).await;
     });
 
     Ok(session_id)
@@ -364,6 +350,30 @@ async fn simulate_input_event(
     #[cfg(not(target_os = "linux"))]
     let _ = event;
     Ok(())
+}
+
+async fn relay_read_loop(
+    reader_arc: Arc<tokio::sync::Mutex<Option<OwnedReadHalf>>>,
+    manager_arc: Arc<tokio::sync::Mutex<ConnectionManager>>,
+    on_frame: impl Fn(Vec<u8>),
+) {
+    loop {
+        { let mgr = manager_arc.lock().await; if mgr.role != SessionRole::Viewer { break; } }
+        let mut r = reader_arc.lock().await;
+        if let Some(ref mut reader) = *r {
+            let mut lb = [0u8; 4];
+            if reader.read_exact(&mut lb).await.is_err() { break; }
+            let tl = u32::from_be_bytes(lb) as usize;
+            if tl == 0 || tl > 10_000_000 { break; }
+            let mut buf = vec![0u8; tl];
+            if reader.read_exact(&mut buf).await.is_err() { break; }
+            if buf.len() >= 9 && buf[0] == relay_client::MSG_FRAME {
+                let pl = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                let frame = buf[5..(5+pl).min(buf.len())].to_vec();
+                on_frame(frame);
+            }
+        } else { break; }
+    }
 }
 
 fn main() {
