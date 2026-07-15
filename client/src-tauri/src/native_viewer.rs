@@ -1,10 +1,10 @@
 use std::sync::mpsc;
 
 #[cfg(target_os = "macos")]
-#[link(name = "System", kind = "dylib")]
 extern "C" {
+    // _dispatch_main_q is the global dispatch queue (not an inline function)
+    static _dispatch_main_q: std::ffi::c_void;
     fn dispatch_async_f(queue: *mut std::ffi::c_void, ctx: *mut std::ffi::c_void, work: extern "C" fn(*mut std::ffi::c_void));
-    fn dispatch_get_main_queue() -> *mut std::ffi::c_void;
 }
 
 pub fn start_native_viewer(width: usize, height: usize) -> mpsc::Sender<Vec<u8>> {
@@ -17,7 +17,7 @@ pub fn start_native_viewer(width: usize, height: usize) -> mpsc::Sender<Vec<u8>>
             render_loop(*rx, 960, 540);
         }
         let bx = Box::new(rx);
-        unsafe { dispatch_async_f(dispatch_get_main_queue(), Box::into_raw(bx) as *mut std::ffi::c_void, render); }
+        unsafe { dispatch_async_f(&raw const _dispatch_main_q as *const _ as *mut _, Box::into_raw(bx) as *mut std::ffi::c_void, render); }
     }
 
     #[cfg(not(target_os = "macos"))]
