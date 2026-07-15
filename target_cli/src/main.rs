@@ -21,7 +21,6 @@ async fn main() -> Result<()> {
 
     log::info!("rem0te-target: waiting for viewer connection...");
 
-    // Wait for viewer to send RelayInfo via signaling
     let (relay_addr, session_id) = signaling::wait_for_relay_info(server_addr, peer_id).await?;
 
     // Connect to relay

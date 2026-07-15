@@ -45,14 +45,13 @@ impl ScreenCapture {
             let geo = conn.get_geometry(root)?.reply()?;
             let raw = conn.get_image(ImageFormat::Z_PIXMAP, root, 0, 0, geo.width, geo.height, u32::MAX)?.reply()?.data;
 
-            // 50% downscale + mozjpeg
-            let (sw, sh) = (geo.width as u32 / 2, geo.height as u32 / 2);
-            let rgb = bgra_to_rgb_scaled(&raw, geo.width as u32, geo.height as u32, sw, sh);
+            // Full resolution + mozjpeg quality 60
+            let rgb = bgra_to_rgb_full(&raw, geo.width as u32, geo.height as u32);
 
             let mut jpeg = Vec::new();
             let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
-            comp.set_size(sw as usize, sh as usize);
-            comp.set_quality(40.0);
+            comp.set_size(geo.width as usize, geo.height as usize);
+            comp.set_quality(60.0);
             comp.set_fastest_defaults();
             let mut comp = comp.start_compress(&mut jpeg).context("JPEG compress")?;
             comp.write_scanlines(&rgb).context("JPEG write")?;
@@ -62,6 +61,18 @@ impl ScreenCapture {
         #[cfg(not(target_os = "linux"))]
         { Ok(vec![]) }
     }
+}
+
+fn bgra_to_rgb_full(bgra: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+    let row = (w * 4) as usize;
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let i = y * row + x * 4;
+            if i + 3 < bgra.len() { rgb.push(bgra[i+2]); rgb.push(bgra[i+1]); rgb.push(bgra[i]); }
+        }
+    }
+    rgb
 }
 
 fn bgra_to_rgb_scaled(bgra: &[u8], w: u32, h: u32, sw: u32, sh: u32) -> Vec<u8> {
