@@ -12,11 +12,10 @@ class RelayService {
   bool get isConnected => _connected;
 
   /// Create a relay session (called by viewer)
-  Future<String> createSession(String relayHost) async {
-    final parts = relayHost.split(':');
-    final host = parts[0];
-    final port = parts.length > 1 ? int.tryParse(parts[1]) ?? 21117 : 21117;
-
+  Future<String> createSession(String serverAddr) async {
+    // Use relay port 21117, not WS port
+    final host = serverAddr.split(':').first;
+    final port = 21117;
     _socket = await Socket.connect(host, port, timeout: const Duration(seconds: 5));
     _connected = true;
 

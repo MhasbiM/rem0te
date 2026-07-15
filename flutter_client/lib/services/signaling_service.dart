@@ -83,10 +83,12 @@ class SignalingService {
   }
 
   void sendRelayInfo(String toPeer, String sessionId, String serverAddr) {
+    // Strip WS port, use relay port
+    final host = serverAddr.split(':').first;
     _send({
       'type': 'RelayInfo',
       'payload': {
-        'relay_host': serverAddr,
+        'relay_host': '$host:21117',
         'relay_port': 21117,
         'session_id': sessionId,
         'to_peer': toPeer,
