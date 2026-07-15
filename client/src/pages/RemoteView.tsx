@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import {
   X, Maximize2, Minimize2, Monitor,
 } from 'lucide-react';
@@ -24,11 +23,22 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
   const frameCountRef = useRef(0);
   const lastFpsTime = useRef(Date.now());
 
-  // macOS: listen for Tauri events. Linux: native window handles display.
+  // Connect to local WebSocket for binary frames (zero Tauri IPC!)
   useEffect(() => {
-    const unlisten = listen<string>('remote-frame', (event) => {
-      if (event.payload) {
-        setFrameData(`data:image/jpeg;base64,${event.payload}`);
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      ws = new WebSocket('ws://127.0.0.1:9877');
+      ws.binaryType = 'arraybuffer';
+
+      ws.onmessage = (event) => {
+        const blob = new Blob([event.data], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
+        const old = frameData;
+        setFrameData(url);
+        if (old?.startsWith('blob:')) URL.revokeObjectURL(old);
+
         frameCountRef.current++;
         const now = Date.now();
         if (now - lastFpsTime.current >= 1000) {
@@ -36,9 +46,20 @@ export default function RemoteView({ connection, onDisconnect }: Props) {
           frameCountRef.current = 0;
           lastFpsTime.current = now;
         }
-      }
-    });
-    return () => { unlisten.then(fn => fn()); };
+      };
+
+      ws.onclose = () => {
+        reconnectTimer = setTimeout(connect, 500);
+      };
+    };
+
+    // Delay connection to let WS server start
+    setTimeout(connect, 1000);
+
+    return () => {
+      ws?.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
   }, []);
 
   const handleDisconnect = () => {

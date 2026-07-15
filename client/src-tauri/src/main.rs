@@ -5,7 +5,6 @@ mod capture;
 mod connection;
 mod file_transfer;
 mod relay_client;
-mod native_viewer;
 
 use anyhow::Context;
 use base64::Engine;
@@ -48,15 +47,46 @@ async fn start_viewing(
     *state.relay_writer.lock().await = writer;
     *state.relay_reader.lock().await = reader;
 
-    // ── Native GPU window (main thread on macOS, background on Linux) ──
-    let frame_tx = native_viewer::start_native_viewer(960, 540);
+    // ── WebSocket binary stream server (reliable, cross-platform) ──
+    let (frame_tx, frame_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(16);
+
+    // Start local WS server on port 9877
+    tokio::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:9877").await {
+            Ok(l) => l,
+            Err(e) => { log::error!("WS bind failed: {}", e); return; }
+        };
+        log::info!("Frame WS server on ws://127.0.0.1:9877");
+
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let rx = frame_rx.resubscribe();
+                tokio::spawn(handle_ws_connection(stream, rx));
+            }
+        }
+    });
+
+    // Relay reader → frame_tx
     let reader_arc = state.relay_reader.clone();
     let manager_arc = state.connection_manager.clone();
-
     tokio::spawn(async move {
-        relay_read_loop(reader_arc, manager_arc, move |frame| {
-            let _ = frame_tx.send(frame);
-        }).await;
+        loop {
+            { let mgr = manager_arc.lock().await; if mgr.role != SessionRole::Viewer { break; } }
+            let mut r = reader_arc.lock().await;
+            if let Some(ref mut reader) = *r {
+                let mut lb = [0u8; 4];
+                if reader.read_exact(&mut lb).await.is_err() { break; }
+                let tl = u32::from_be_bytes(lb) as usize;
+                if tl == 0 || tl > 10_000_000 { break; }
+                let mut buf = vec![0u8; tl];
+                if reader.read_exact(&mut buf).await.is_err() { break; }
+                if buf.len() >= 9 && buf[0] == relay_client::MSG_FRAME {
+                    let pl = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                    let frame = buf[5..(5+pl).min(buf.len())].to_vec();
+                    let _ = frame_tx.send(frame);
+                }
+            } else { break; }
+        }
     });
 
     Ok(session_id)
@@ -352,27 +382,57 @@ async fn simulate_input_event(
     Ok(())
 }
 
-async fn relay_read_loop(
-    reader_arc: Arc<tokio::sync::Mutex<Option<OwnedReadHalf>>>,
-    manager_arc: Arc<tokio::sync::Mutex<ConnectionManager>>,
-    on_frame: impl Fn(Vec<u8>),
-) {
+/// Minimal WebSocket server — sends binary JPEG frames to connected browser
+async fn handle_ws_connection(stream: tokio::net::TcpStream, mut rx: tokio::sync::broadcast::Receiver<Vec<u8>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut reader, mut writer) = stream.into_split();
+
+    // Read HTTP upgrade request (minimal parsing)
+    let mut req = vec![0u8; 4096];
+    let n = reader.read(&mut req).await.unwrap_or(0);
+    let req_str = String::from_utf8_lossy(&req[..n]);
+
+    // Extract Sec-WebSocket-Key
+    let key = req_str.lines()
+        .find(|l| l.to_lowercase().starts_with("sec-websocket-key:"))
+        .and_then(|l| l.split(':').nth(1))
+        .map(|s| s.trim())
+        .unwrap_or("");
+
+    // Compute accept key (SHA1 + base64)
+    use sha1::{Sha1, Digest};
+    let mut hasher = Sha1::new();
+    hasher.update(key.as_bytes());
+    hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let accept = base64::engine::general_purpose::STANDARD.encode(hasher.finalize());
+
+    // Send upgrade response
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+        accept
+    );
+    let _ = writer.write_all(response.as_bytes()).await;
+
+    // Send binary frames (simple unfragmented, unmasked server→client)
     loop {
-        { let mgr = manager_arc.lock().await; if mgr.role != SessionRole::Viewer { break; } }
-        let mut r = reader_arc.lock().await;
-        if let Some(ref mut reader) = *r {
-            let mut lb = [0u8; 4];
-            if reader.read_exact(&mut lb).await.is_err() { break; }
-            let tl = u32::from_be_bytes(lb) as usize;
-            if tl == 0 || tl > 10_000_000 { break; }
-            let mut buf = vec![0u8; tl];
-            if reader.read_exact(&mut buf).await.is_err() { break; }
-            if buf.len() >= 9 && buf[0] == relay_client::MSG_FRAME {
-                let pl = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-                let frame = buf[5..(5+pl).min(buf.len())].to_vec();
-                on_frame(frame);
+        match rx.recv().await {
+            Ok(frame) => {
+                let len = frame.len();
+                let mut header = vec![0x82u8]; // FIN + BINARY opcode
+                if len < 126 {
+                    header.push(len as u8);
+                } else if len < 65536 {
+                    header.push(126);
+                    header.extend_from_slice(&(len as u16).to_be_bytes());
+                } else {
+                    header.push(127);
+                    header.extend_from_slice(&(len as u64).to_be_bytes());
+                }
+                if writer.write_all(&header).await.is_err() { break; }
+                if writer.write_all(&frame).await.is_err() { break; }
             }
-        } else { break; }
+            Err(_) => break,
+        }
     }
 }
 
