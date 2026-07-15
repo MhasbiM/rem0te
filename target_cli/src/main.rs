@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::io::Read;
 
 mod capture;
 mod relay;
@@ -11,29 +12,47 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: rem0te-target <server_addr> <peer_id>");
-        eprintln!("  server_addr: signaling server (e.g. 192.168.1.1:21118)");
-        eprintln!("  peer_id:     our peer ID (e.g. peer-linux-01)");
         return Ok(());
     }
-
     let server_addr = &args[1];
     let peer_id = &args[2];
+    let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
 
-    log::info!("rem0te-target: waiting for viewer connection...");
+    log::info!("Target waiting for viewer on {}...", server_addr);
 
-    let (relay_addr, session_id) = signaling::wait_for_relay_info(server_addr, peer_id).await?;
-
-    // Connect to relay
+    let (sig, relay_addr, session_id) = signaling::Signaling::connect(server_addr, peer_id).await?;
     let mut relay = relay::RelayClient::connect_target(&relay_addr, &session_id).await?;
 
-    // Start capture + stream
-    let mut cap = capture::ScreenCapture::new(1920, 1080);
-    cap.start()?;
+    log::info!("Starting ffmpeg on {}...", display);
+    let mut child = capture::start_ffmpeg(&display)?;
+    let stdout = child.stdout.take().unwrap();
 
-    log::info!("Streaming started! (50% scale, mozjpeg q40)");
-    loop {
-        let frame = cap.capture_frame()?;
+    // Read ffmpeg stdout in blocking task
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut buf: Vec<u8> = Vec::with_capacity(512 * 1024);
+        let mut chunk = vec![0u8; 65536];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > 4_000_000 { buf.clear(); }
+                    while let Some(frame) = capture::extract_frame(&mut buf) {
+                        let _ = tx.blocking_send(frame);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    log::info!("Streaming full HD via ffmpeg MJPEG...");
+    while let Some(frame) = rx.recv().await {
         relay.send_frame(&frame).await?;
-        tokio::task::yield_now().await;
     }
+
+    drop(sig);
+    Ok(())
 }
