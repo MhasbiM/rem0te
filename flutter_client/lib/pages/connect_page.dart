@@ -27,7 +27,7 @@ class _ConnectPageState extends State<ConnectPage> {
       if (!ev.accepted) { setState(() { _err = 'Rejected'; _busy = false; }); return; }
       try {
         final sid = await _relay.createSession(_serverCtrl.text);
-        _signaling.sendRelayInfo(ev.fromPeer, sid);
+        _signaling.sendRelayInfo(ev.fromPeer, sid, _serverCtrl.text);
         if (mounted) _goRemote(ev.fromPeer, true);
       } catch (e) { setState(() { _err = 'Relay: $e'; _busy = false; }); }
     });

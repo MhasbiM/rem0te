@@ -82,11 +82,11 @@ class SignalingService {
     });
   }
 
-  void sendRelayInfo(String toPeer, String sessionId) {
+  void sendRelayInfo(String toPeer, String sessionId, String serverAddr) {
     _send({
       'type': 'RelayInfo',
       'payload': {
-        'relay_host': '',
+        'relay_host': serverAddr,
         'relay_port': 21117,
         'session_id': sessionId,
         'to_peer': toPeer,
