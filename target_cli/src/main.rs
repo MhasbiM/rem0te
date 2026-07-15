@@ -48,11 +48,34 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Pipeline: spawn relay sender so frame capture never waits for TCP
+    let (tx_relay, mut rx_relay) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+    let relay_handle = tokio::spawn(async move {
+        while let Some(frame) = rx_relay.recv().await {
+            if let Err(e) = relay.send_frame(&frame).await {
+                log::error!("Relay send error: {}", e);
+                break;
+            }
+        }
+    });
+
     log::info!("Streaming full HD via ffmpeg MJPEG...");
+    let mut fps_counter = 0u64;
+    let mut last_log = std::time::Instant::now();
     while let Some(frame) = rx.recv().await {
-        relay.send_frame(&frame).await?;
+        fps_counter += 1;
+        let now = std::time::Instant::now();
+        if now.duration_since(last_log).as_secs_f64() >= 5.0 {
+            log::info!("Capture FPS: {:.1}", fps_counter as f64 / now.duration_since(last_log).as_secs_f64());
+            fps_counter = 0;
+            last_log = now;
+        }
+        // Non-blocking send: drop frame if relay buffer full (backpressure)
+        let _ = tx_relay.try_send(frame);
     }
 
+    drop(tx_relay);
+    relay_handle.await.ok();
     drop(sig);
     Ok(())
 }

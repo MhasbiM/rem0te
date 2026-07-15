@@ -62,8 +62,9 @@ class _RemotePageState extends State<RemotePage> {
   }
 
   String _btnName(int buttons) {
-    if (buttons & 2 != 0) return 'right';
-    if (buttons & 4 != 0) return 'middle';
+    // buttons bitmask: 1=left, 2=right, 4=middle
+    if ((buttons & 2) != 0) return 'right';
+    if ((buttons & 4) != 0) return 'middle';
     return 'left';
   }
 
@@ -78,11 +79,11 @@ class _RemotePageState extends State<RemotePage> {
     return Focus(
       autofocus: true,
       onKeyEvent: (node, event) {
-        if (event.runtimeType.toString() == 'KeyDownEvent') {
+        if (event is KeyDownEvent) {
           _sendInput('keyDown', keyCode: event.logicalKey.keyLabel);
           return KeyEventResult.handled;
         }
-        if (event.runtimeType.toString() == 'KeyUpEvent') {
+        if (event is KeyUpEvent) {
           _sendInput('keyUp', keyCode: event.logicalKey.keyLabel);
           return KeyEventResult.handled;
         }

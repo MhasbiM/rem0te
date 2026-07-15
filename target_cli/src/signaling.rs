@@ -45,19 +45,30 @@ impl Signaling {
 
         // Spawn input listener with remaining read half (write stays alive)
         tokio::spawn(async move {
+            log::info!("Input listener started");
             while let Some(Ok(msg)) = read.next().await {
-                if let Ok(text) = msg.to_text() {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
-                        if v["type"] == "InputEvent" {
-                            if let Some(evt_str) = v["payload"]["event"].as_str() {
-                                if let Ok(evt) = serde_json::from_str::<serde_json::Value>(evt_str) {
-                                    simulate_input(&evt);
-                                }
+                let text = msg.to_text().unwrap_or("");
+                log::debug!("WS recv: {}", &text[..text.len().min(200)]);
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+                    let msg_type = v["type"].as_str().unwrap_or("");
+                    log::info!("WS msg type: {}", msg_type);
+                    if msg_type == "InputEvent" {
+                        if let Some(evt_str) = v["payload"]["event"].as_str() {
+                            log::info!("InputEvent received: {}", evt_str);
+                            if let Ok(evt) = serde_json::from_str::<serde_json::Value>(evt_str) {
+                                simulate_input(&evt);
+                            } else {
+                                log::warn!("Failed to parse event JSON: {}", evt_str);
                             }
+                        } else {
+                            log::warn!("InputEvent missing payload.event");
                         }
                     }
+                } else {
+                    log::warn!("Failed to parse WS message: {}", &text[..text.len().min(100)]);
                 }
             }
+            log::warn!("Input listener ended");
         });
 
         Ok((Self { write }, relay_host, session_id))
