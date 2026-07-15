@@ -1,21 +1,23 @@
 use std::sync::mpsc;
 
+#[cfg(target_os = "macos")]
+#[link(name = "System", kind = "dylib")]
+extern "C" {
+    fn dispatch_async_f(queue: *mut std::ffi::c_void, ctx: *mut std::ffi::c_void, work: extern "C" fn(*mut std::ffi::c_void));
+    fn dispatch_get_main_queue() -> *mut std::ffi::c_void;
+}
+
 pub fn start_native_viewer(width: usize, height: usize) -> mpsc::Sender<Vec<u8>> {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
     #[cfg(target_os = "macos")]
     {
-        use std::ffi::c_void;
-        extern "C" {
-            fn dispatch_async_f(queue: *mut c_void, ctx: *mut c_void, work: extern "C" fn(*mut c_void));
-            fn dispatch_get_main_queue() -> *mut c_void;
-        }
-        extern "C" fn render(ctx: *mut c_void) {
+        extern "C" fn render(ctx: *mut std::ffi::c_void) {
             let rx = unsafe { Box::from_raw(ctx as *mut mpsc::Receiver<Vec<u8>>) };
             render_loop(*rx, 960, 540);
         }
         let bx = Box::new(rx);
-        unsafe { dispatch_async_f(dispatch_get_main_queue(), Box::into_raw(bx) as *mut c_void, render); }
+        unsafe { dispatch_async_f(dispatch_get_main_queue(), Box::into_raw(bx) as *mut std::ffi::c_void, render); }
     }
 
     #[cfg(not(target_os = "macos"))]
