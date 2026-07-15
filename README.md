@@ -65,23 +65,16 @@ rem0te/
 │       └── components/
 │           ├── AuthContext.tsx
 │           └── Layout.tsx
-├── client/           # Tauri desktop app (Rust + React)
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── src-tauri/
-│   │   ├── Cargo.toml
-│   │   ├── tauri.conf.json
-│   │   └── src/
-│   │       ├── main.rs
-│   │       ├── capture.rs      # macOS/Linux screen capture
-│   │       ├── connection.rs   # Signaling & relay client
-│   │       └── file_transfer.rs # File transfer protocol
-│   └── src/
-│       ├── App.tsx
-│       └── pages/
-│           ├── ConnectView.tsx
-│           ├── RemoteView.tsx
-│           └── FileTransferView.tsx
+├── flutter_client/    # Flutter desktop app (macOS + Linux)
+│   ├── pubspec.yaml
+│   └── lib/
+│       ├── main.dart
+│       ├── pages/
+│       │   ├── connect_page.dart
+│       │   └── remote_page.dart
+│       └── services/
+│           ├── signaling_service.dart
+│           └── relay_service.dart
 ├── Cargo.toml        # Rust workspace
 └── docker-compose.yml
 ```
@@ -124,12 +117,13 @@ Open http://localhost:3000 and login with:
 - **Username**: `admin`
 - **Password**: `admin123`
 
-### 3. Run the Client (Tauri)
+### 3. Run the Flutter Client
 
 ```bash
-cd client
-bun install
-cargo tauri dev
+cd flutter_client
+flutter pub get
+flutter run -d macos    # macOS
+flutter run -d linux    # Linux
 ```
 
 ## Platform Support
@@ -175,17 +169,17 @@ cargo tauri dev
 ## Development
 
 ```bash
-# Build server
+# Server
 cd server && cargo build --release
 
-# Build admin
+# Admin
 cd admin && bun run build
 
-# Build Tauri client for macOS
-cd client && cargo tauri build --target aarch64-apple-darwin
+# Flutter Client macOS
+cd flutter_client && flutter build macos
 
-# Build Tauri client for Linux
-cd client && cargo tauri build --target x86_64-unknown-linux-gnu
+# Flutter Client Linux
+cd flutter_client && flutter build linux
 ```
 
 ## License

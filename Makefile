@@ -20,18 +20,21 @@ admin-dev:
 admin-build:
 	cd admin && bun run build
 
-# ── Client (Tauri) ──────────────────────────────────────
-client-install:
-	cd client && bun install
+# ── Flutter Client ─────────────────────────────────────
+flutter-install:
+	cd flutter_client && flutter pub get
 
-client-dev:
-	cd client && bun tauri dev
+flutter-dev:
+	cd flutter_client && flutter run -d macos
 
-client-build-macos:
-	cd client && cargo tauri build --target aarch64-apple-darwin
+flutter-dev-linux:
+	cd flutter_client && flutter run -d linux
 
-client-build-linux:
-	cd client && cargo tauri build --target x86_64-unknown-linux-gnu
+flutter-build-macos:
+	cd flutter_client && flutter build macos
+
+flutter-build-linux:
+	cd flutter_client && flutter build linux
 
 # ── Docker ──────────────────────────────────────────────
 docker-build:
